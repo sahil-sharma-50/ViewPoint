@@ -12,10 +12,14 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as vm from 'node:vm';
 import * as path from 'node:path';
 import * as url from 'node:url';
 import { buildGraph } from '../analyse-repo.js';
 import { createApp, serialiseGraph } from '../server.js';
+import { deleteSession } from '../session-store.js';
 import type { ExportGraph } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -100,15 +104,22 @@ describe('GET /', () => {
     expect(res.headers['content-type']).toMatch(/text\/html/);
   });
 
-  it('body contains embedded graph JSON', async () => {
+  it('body contains URL input form', async () => {
     const res = await httpRequest(port, 'GET', '/');
-    expect(res.body).toContain('"nodes"');
-    expect(res.body).toContain('"edges"');
+    expect(res.body).toContain('Analyse');
   });
 
-  it('body contains certainty values', async () => {
+  it('body contains analyse endpoint reference', async () => {
     const res = await httpRequest(port, 'GET', '/');
-    expect(res.body).toContain('candidate');
+    // The URL input form posts to /analyse
+    expect(res.body).toContain('/analyse');
+  });
+
+  it('serves parseable browser JavaScript', async () => {
+    const res = await httpRequest(port, 'GET', '/');
+    const script = res.body.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeDefined();
+    expect(() => new vm.Script(script!)).not.toThrow();
   });
 
   it('body contains "Made with IBM Bob" footer', async () => {
@@ -220,6 +231,81 @@ describe('POST /api/graph', () => {
   it('does not accept a client-supplied local path', async () => {
     const res = await httpRequest(port, 'POST', '/api/graph', { repoPath: DEMO_PATH });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('session workflow', () => {
+  it('analyses, rehearses, renders a report, and downloads its patch', async () => {
+    const clonePath = await fs.mkdtemp(path.join(os.tmpdir(), 'last-rites-clone-test-'));
+    await fs.cp(path.join(DEMO_PATH, 'src'), path.join(clonePath, 'src'), {
+      recursive: true,
+      filter: (source) => !source.endsWith('.test.ts'),
+    });
+    await fs.copyFile(path.join(DEMO_PATH, 'tsconfig.json'), path.join(clonePath, 'tsconfig.json'));
+    await fs.copyFile(path.join(DEMO_PATH, 'package.json'), path.join(clonePath, 'package.json'));
+
+    const app = createApp(demoGraph, async () => ({ ok: true, path: clonePath }));
+    const testServer = http.createServer(app);
+    await new Promise<void>((resolve) => testServer.listen(0, '127.0.0.1', resolve));
+    const testPort = (testServer.address() as { port: number }).port;
+    let sessionId = '';
+    try {
+      const analysed = await httpRequest(testPort, 'POST', '/analyse', {
+        url: 'https://github.com/example/demo',
+      });
+      expect(analysed.status).toBe(200);
+      sessionId = (JSON.parse(analysed.body) as { sessionId: string }).sessionId;
+      expect(sessionId).toBeTruthy();
+
+      const graph = await httpRequest(testPort, 'GET', `/graph?session=${sessionId}`);
+      expect(graph.status).toBe(200);
+      const nodes = (JSON.parse(graph.body) as { nodes: { id: string }[] }).nodes;
+      const candidateId = nodes.find((node) => node.id.includes('newDashboard'))?.id;
+      expect(candidateId).toBeTruthy();
+
+      const view = await httpRequest(testPort, 'GET', `/graph-view?session=${sessionId}`);
+      expect(view.status).toBe(200);
+      expect(view.body).toContain(sessionId);
+      const viewScript = view.body.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+      expect(viewScript).toBeDefined();
+      expect(() => new vm.Script(viewScript!)).not.toThrow();
+
+      const rehearsed = await httpRequest(testPort, 'POST', '/rehearse', { sessionId, candidateId });
+      expect(rehearsed.status).toBe(200);
+      const result = JSON.parse(rehearsed.body) as { ok: boolean; delta: { newErrors: unknown[] } };
+      expect(result.ok).toBe(true);
+      expect(result.delta.newErrors).toHaveLength(0);
+
+      const report = await httpRequest(testPort, 'GET', `/report?session=${sessionId}`);
+      expect(report.status).toBe(200);
+      expect(report.body).toContain(`/report/patch?session=${sessionId}`);
+
+      const patch = await httpRequest(testPort, 'GET', `/report/patch?session=${sessionId}`);
+      expect(patch.status).toBe(200);
+      expect(patch.headers['content-disposition']).toContain('removal.patch');
+      expect(patch.body).toContain('newDashboard');
+    } finally {
+      if (sessionId) await deleteSession(sessionId);
+      await new Promise<void>((resolve) => testServer.close(() => resolve()));
+      expect(await fs.stat(clonePath).then(() => true, () => false)).toBe(false);
+    }
+  });
+
+  it('removes a clone when analysis fails before a session exists', async () => {
+    const clonePath = await fs.mkdtemp(path.join(os.tmpdir(), 'last-rites-clone-test-'));
+    const app = createApp(demoGraph, async () => ({ ok: true, path: clonePath }));
+    const testServer = http.createServer(app);
+    await new Promise<void>((resolve) => testServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const analysed = await httpRequest((testServer.address() as { port: number }).port, 'POST', '/analyse', {
+        url: 'https://github.com/example/demo',
+      });
+      expect(analysed.status).toBe(400);
+      expect(await fs.stat(clonePath).then(() => true, () => false)).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => testServer.close(() => resolve()));
+      await fs.rm(clonePath, { recursive: true, force: true });
+    }
   });
 });
 

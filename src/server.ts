@@ -1,23 +1,35 @@
 /**
- * src/server.ts — Last Rites HTTP server (Task 4).
+ * src/server.ts — Last Rites HTTP server (Tasks 4 + 6).
  *
  * Routes:
- *   GET /              → interactive dependency-map UI (HTML)
- *   GET /api/graph     → serialised ExportGraph as JSON
+ *   GET  /                       → public/index.html (URL input form)
+ *   POST /analyse   { url }      → clones repo, builds graph, returns { sessionId }
+ *   GET  /graph?session=<id>     → serialised ExportGraph for a session
+ *   POST /rehearse  { sessionId, candidateId }
+ *                                → runs rehearseRemoval, returns RehearsalResult
+ *   GET  /report?session=<id>    → rendered HTML report page
+ *   GET  /report/patch?session=<id>
+ *                                → attachment download of removal.patch
+ *   GET  /api/graph              → demo graph (backward-compat for existing tests)
  *
- * The graph is serialised with edges as { source: file, targets: file[] }
- * so that the browser can map them to nodes via node.file.
+ * The server NEVER accepts a client-supplied filesystem path.
+ * Session state (repoPath, graph, rehearsal) lives server-side under a UUID.
  */
 
 import express from 'express';
 import * as path from 'node:path';
 import * as url from 'node:url';
+import * as fs from 'node:fs';
+import { cloneRepo, isValidGitHubUrl } from './clone-repo.js';
 import { buildGraph } from './analyse-repo.js';
+import { rehearseRemoval } from './rehearse-removal.js';
 import { renderGraphPage } from './graph-view.js';
+import { generateReport } from './report-writer.js';
+import { createSession, getSession, updateSession } from './session-store.js';
 import type { ExportGraph } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Serialisation helpers
+// Serialisation helpers (unchanged from Task 4 — existing tests depend on them)
 // ---------------------------------------------------------------------------
 
 export interface SerialNode {
@@ -115,20 +127,238 @@ export function serialiseGraph(graph: ExportGraph): SerialGraph {
 }
 
 // ---------------------------------------------------------------------------
-// Express application
+// Express application factory
 // ---------------------------------------------------------------------------
 
-export function createApp(demoGraph: ExportGraph): express.Application {
+export function createApp(demoGraph: ExportGraph, clone: typeof cloneRepo = cloneRepo): express.Application {
   const app = express();
+  app.use(express.json());
 
-  // Serve the interactive dependency-map UI.
+  const __filename = url.fileURLToPath(import.meta.url);
+  const projectRoot = path.resolve(path.dirname(__filename), '..');
+  const publicDir = path.join(projectRoot, 'public');
+
+  // ── GET / ─────────────────────────────────────────────────────────────────
+  // Serve the URL input form.  Falls back to a minimal inline form if the
+  // public/ directory hasn't been built yet (e.g. during unit tests).
   app.get('/', (_req, res) => {
-    const html = renderGraphPage(serialiseGraph(demoGraph));
+    const indexPath = path.join(publicDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.sendFile(indexPath);
+    } else {
+      // Fallback: render the demo graph as the old Task 4 view.
+      const html = renderGraphPage(serialiseGraph(demoGraph));
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    }
+  });
+
+  // ── POST /analyse ─────────────────────────────────────────────────────────
+  // Accepts: { url: string }
+  // Returns: { sessionId: string }  or  HTTP 400 with { error: string }
+  app.post('/analyse', async (req, res) => {
+    const body = req.body as { url?: unknown };
+    const repoUrl = typeof body.url === 'string' ? body.url.trim() : '';
+
+    if (!repoUrl) {
+      res.status(400).json({ error: 'Missing "url" field.' });
+      return;
+    }
+    if (!isValidGitHubUrl(repoUrl)) {
+      res.status(400).json({
+        error:
+          'Invalid GitHub URL. Supply a public HTTPS URL in the form ' +
+          'https://github.com/<owner>/<repo>.',
+      });
+      return;
+    }
+
+    // Clone
+    const cloneResult = await clone(repoUrl);
+    if (!cloneResult.ok) {
+      const msgs: Record<string, string> = {
+        INVALID_URL: 'Invalid GitHub URL.',
+        CLONE_FAILED: 'Failed to clone the repository. Check that the URL is public and accessible.',
+        SIZE_EXCEEDED: 'Repository TypeScript source exceeds the 50 MB limit.',
+      };
+      res.status(400).json({ error: msgs[cloneResult.error] ?? cloneResult.error });
+      return;
+    }
+
+    const graphResult = await buildGraph(cloneResult.path);
+    if (!graphResult.ok || graphResult.graph.nodes.size === 0) {
+      await fs.promises.rm(cloneResult.path, { recursive: true, force: true });
+      res.status(400).json({ error: graphResult.ok
+        ? 'No TypeScript files found in this repository.'
+        : 'Could not analyse this repository. A valid root tsconfig.json is required.' });
+      return;
+    }
+
+    const sessionId = createSession(cloneResult.path, repoUrl);
+    updateSession(sessionId, { graph: graphResult.graph });
+    res.json({ sessionId });
+  });
+
+  // ── GET /graph?session=<id> ───────────────────────────────────────────────
+  // Returns: serialised ExportGraph JSON for the given session.
+  app.get('/graph', (req, res) => {
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing "session" query parameter.' });
+      return;
+    }
+    const session = getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' });
+      return;
+    }
+    if (!session.graph) {
+      res.status(404).json({ error: 'Graph not yet available for this session.' });
+      return;
+    }
+    res.json(serialiseGraph(session.graph));
+  });
+
+  // ── GET /graph-view?session=<id> ─────────────────────────────────────────
+  // Renders the interactive graph page with the session's graph embedded and
+  // the sessionId baked in so "Preview removal" can call /rehearse correctly.
+  app.get('/graph-view', (req, res) => {
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
+    if (!sessionId) {
+      res.status(400).send('<p>Missing "session" query parameter.</p>');
+      return;
+    }
+    const session = getSession(sessionId);
+    if (!session) {
+      res.status(404).send('<p>Session not found.</p>');
+      return;
+    }
+    if (!session.graph) {
+      res.status(404).send('<p>Graph not yet available for this session.</p>');
+      return;
+    }
+    const html = renderGraphPage(serialiseGraph(session.graph), sessionId);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
   });
 
-  // GET /api/graph — return the pre-built demo graph.
+  // ── POST /rehearse ────────────────────────────────────────────────────────
+  // Accepts: { sessionId: string, candidateId: string }
+  // Returns: RehearsalResult  or  HTTP 400/404
+  app.post('/rehearse', async (req, res) => {
+    const body = req.body as { sessionId?: unknown; candidateId?: unknown };
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+    const candidateId = typeof body.candidateId === 'string' ? body.candidateId : '';
+
+    if (!sessionId || !candidateId) {
+      res.status(400).json({ error: 'Missing "sessionId" or "candidateId".' });
+      return;
+    }
+
+    const session = getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' });
+      return;
+    }
+    if (!session.graph) {
+      res.status(404).json({ error: 'Graph not available for this session.' });
+      return;
+    }
+
+    // Validate candidate from the stored graph — never trust client-supplied paths.
+    const node = session.graph.nodes.get(candidateId);
+    if (!node) {
+      res.status(400).json({ error: `Candidate "${candidateId}" not found in graph.` });
+      return;
+    }
+    if (node.certainty !== 'candidate') {
+      res.status(400).json({
+        error:
+          `Cannot rehearse removal: node "${candidateId}" has certainty "${node.certainty}". ` +
+          'Only nodes with certainty "candidate" may be rehearsed.',
+      });
+      return;
+    }
+    if (!node.isSoleExport) {
+      res.status(400).json({
+        error:
+          `Cannot rehearse removal: node "${candidateId}" is not a sole export (isSoleExport is false). ` +
+          'Whole-file removal is only available for files with a single export.',
+      });
+      return;
+    }
+
+    const candidate = { nodeId: node.id, file: node.file, name: node.name };
+    const result = await rehearseRemoval(session.repoPath, candidate, session.graph);
+
+    if (result.ok) {
+      updateSession(sessionId, { rehearsal: result });
+    }
+
+    res.json(result);
+  });
+
+  // ── GET /report?session=<id> ──────────────────────────────────────────────
+  // Returns: rendered HTML report page for the most recent rehearsal.
+  app.get('/report', (req, res) => {
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
+    if (!sessionId) {
+      res.status(400).send('<p>Missing "session" query parameter.</p>');
+      return;
+    }
+    const session = getSession(sessionId);
+    if (!session || !session.rehearsal) {
+      res.status(404).send('<p>Rehearsal result not found. Run /rehearse first.</p>');
+      return;
+    }
+
+    // Find the candidate node from the graph to get its file/name.
+    let candidateFile = '(unknown)';
+    let candidateName = '(unknown)';
+    if (session.graph) {
+      for (const node of session.graph.nodes.values()) {
+        if (session.rehearsal.removedFiles.includes(node.file)) {
+          candidateFile = node.file;
+          candidateName = node.name;
+          break;
+        }
+      }
+    }
+
+    const report = generateReport(session.rehearsal, {
+      repoUrl: session.repoUrl,
+      candidateFile,
+      candidateName,
+      patchUrl: `/report/patch?session=${encodeURIComponent(sessionId)}`,
+    });
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(report.html);
+  });
+
+  // ── GET /report/patch?session=<id> ───────────────────────────────────────
+  // Returns: removal.patch file download.
+  app.get('/report/patch', (req, res) => {
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
+    if (!sessionId) {
+      res.status(400).send('Missing "session" query parameter.');
+      return;
+    }
+    const session = getSession(sessionId);
+    if (!session || !session.rehearsal) {
+      res.status(404).send('Rehearsal result not found. Run /rehearse first.');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="removal.patch"');
+    res.send(session.rehearsal.patchText);
+  });
+
+  // ── GET /api/graph ────────────────────────────────────────────────────────
+  // Backward-compatible route used by existing Task 4 tests — returns the
+  // built-in demo graph.
   app.get('/api/graph', (_req, res) => {
     res.json(serialiseGraph(demoGraph));
   });

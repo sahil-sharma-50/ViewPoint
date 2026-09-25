@@ -25,8 +25,9 @@ function jsonEmbed(data: unknown): string {
     .replace(/&/g, '\\u0026');
 }
 
-export function renderGraphPage(graph: SerialGraph): string {
+export function renderGraphPage(graph: SerialGraph, sessionId?: string): string {
   const graphJson = jsonEmbed(graph);
+  const sessionIdJson = jsonEmbed(sessionId ?? null);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -389,6 +390,7 @@ header h1 span { color: var(--muted); font-weight: 400; }
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const GRAPH = ${graphJson};
+  const SESSION_ID = ${sessionIdJson};
 
   // Index nodes by file path (one file may have multiple exports → array of nodes).
   const nodesByFile = new Map();
@@ -756,7 +758,7 @@ header h1 span { color: var(--muted); font-weight: 400; }
       previewTitle.textContent = 'Preview Removal';
       previewReason.textContent =
         'This file is a retirement candidate with a single export — the entire file can be removed. ' +
-        'Clicking "Preview removal" calls the /rehearse endpoint with this file's node ID.';
+        'Clicking "Preview removal" calls the /rehearse endpoint with the selected node ID.';
 
       const btn = document.createElement('button');
       btn.className = 'btn-preview';
@@ -765,17 +767,25 @@ header h1 span { color: var(--muted); font-weight: 400; }
       const resultEl = document.createElement('pre');
       resultEl.className = 'preview-result';
       resultEl.style.display = 'none';
+      const reportLink = document.createElement('a');
+      reportLink.textContent = 'Open full report and download patch →';
+      reportLink.style.display = 'none';
+      reportLink.style.color = 'var(--candidate)';
 
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         btn.textContent = 'Running…';
         resultEl.style.display = '';
         resultEl.textContent = 'Requesting rehearsal…';
+        reportLink.style.display = 'none';
         try {
+          // Use the embedded SESSION_ID (set by the server when rendering a
+          // session graph page), or fall back to the ?session= query param.
+          const sid = SESSION_ID || new URLSearchParams(window.location.search).get('session') || '';
           const resp = await fetch('/rehearse', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeId: node.id, file: node.file, name: node.name }),
+            body: JSON.stringify({ sessionId: sid, candidateId: node.id }),
           });
           const data = await resp.json();
           if (data.ok) {
@@ -784,7 +794,12 @@ header h1 span { color: var(--muted); font-weight: 400; }
               'New errors introduced: ' + d.newErrors.length + '\\n' +
               'Resolved errors: ' + d.resolvedErrors.length + '\\n' +
               'Net change: ' + d.netChange + '\\n\\n' +
-              (data.patchText ? 'Patch preview:\\n' + data.patchText : '');
+              (data.patchText ? 'Patch preview (first 2000 chars):\\n' + data.patchText.slice(0, 2000) : '');
+            if (sid) {
+              const reportUrl = '/report?session=' + encodeURIComponent(sid);
+              reportLink.href = reportUrl;
+              reportLink.style.display = 'inline-block';
+            }
           } else {
             resultEl.textContent = 'Rehearsal unavailable: ' + (data.error || 'unknown error');
           }
@@ -800,6 +815,7 @@ header h1 span { color: var(--muted); font-weight: 400; }
       box.appendChild(previewReason);
       box.appendChild(btn);
       box.appendChild(resultEl);
+      box.appendChild(reportLink);
     } else {
       box.classList.add('no-preview');
       previewTitle.textContent = 'Preview Removal — Not Available';
