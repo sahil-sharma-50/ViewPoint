@@ -3,19 +3,22 @@
  *
  * Integration tests for buildGraph() against the demo/ fixture.
  *
- * All assertions are described in last-rites-plan.md § Task 3:
+ * Plan acceptance criteria (last-rites-plan.md § Task 3):
  *   - newDashboard: certainty === 'candidate', fanIn === 0, isSoleExport === true
  *   - legacyExport: certainty === 'candidate', fanIn === 0, isSoleExport === true
  *   - darkMode:     certainty === 'unsafe',    fanIn === 1, evidence references index.ts
  *   - formatDate:   certainty === 'unsafe',    fanIn === 3
- *   - Entry-point:  dist/cli.js / cli.ts declared in package.json "main" → classified 'unknown'
+ *   - Entry-point:  file declared in package.json "main" → classified 'unknown'
  *
  * These tests run against the real demo/ directory on disk (no mocks needed).
+ * The entry-point test uses a self-contained temp-dir fixture.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'node:path';
 import * as url from 'node:url';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { buildGraph } from '../analyse-repo.js';
 import type { ExportGraph, ExportNode } from '../types.js';
 
@@ -38,6 +41,15 @@ function findNode(graph: ExportGraph, fileFragment: string, exportName: string):
     }
   }
   return undefined;
+}
+
+/** Collect all distinct node.file values from the graph. */
+function allNodeFiles(graph: ExportGraph): Set<string> {
+  const files = new Set<string>();
+  for (const node of graph.nodes.values()) {
+    files.add(node.file);
+  }
+  return files;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,23 +80,38 @@ describe('buildGraph — graph structure', () => {
     expect(graph.nodes.size).toBeGreaterThan(0);
   });
 
-  it('every edge target exists as a node file', () => {
-    // Collect all node files.
-    const nodeFiles = new Set<string>();
-    for (const node of graph.nodes.values()) {
-      nodeFiles.add(node.file);
+  it('every edge source exists as a node file', () => {
+    const nodeFiles = allNodeFiles(graph);
+    for (const [source] of graph.edges) {
+      expect(nodeFiles.has(source)).toBe(true);
     }
+  });
 
-    // Every target referenced in edges must be a file that has nodes.
+  it('every edge target exists as a node file', () => {
+    const nodeFiles = allNodeFiles(graph);
     for (const [, targets] of graph.edges) {
       for (const target of targets) {
-        // Not all imported files need to have export nodes (e.g. formatDate
-        // is imported but its file IS in nodes). We just check that targets
-        // are not completely unknown paths.
-        expect(typeof target).toBe('string');
-        expect(target.length).toBeGreaterThan(0);
+        expect(nodeFiles.has(target)).toBe(true);
       }
     }
+  });
+
+  it('index.ts → darkMode.ts edge exists', () => {
+    // index.ts imports darkMode; confirm the directed edge is present.
+    const nodeFiles = allNodeFiles(graph);
+    const indexFile = [...nodeFiles].find((f) => f.endsWith('index.ts'));
+    const darkFile = [...nodeFiles].find((f) => f.includes('darkMode'));
+    expect(indexFile).toBeDefined();
+    expect(darkFile).toBeDefined();
+
+    const targets = graph.edges.get(indexFile!);
+    expect(targets).toBeDefined();
+    expect(targets!.has(darkFile!)).toBe(true);
+  });
+
+  it('index.ts has a node even though it exports nothing', () => {
+    const nodeFiles = allNodeFiles(graph);
+    expect([...nodeFiles].some((f) => f.endsWith('index.ts'))).toBe(true);
   });
 });
 
@@ -187,42 +214,80 @@ describe('formatDate.ts', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Entry-point protection — the main project's package.json has "main": "dist/cli.js"
-// We test against a synthetic package.json if needed, but here we can verify
-// that the analyser correctly reads entry points from the demo/ package.json.
-// demo/package.json has no "main"/"exports" fields, so we also test buildGraph
-// on the root repo to verify the protection logic in the integration test.
+// Entry-point protection — self-contained temp-dir fixture.
+//
+// We create a minimal repo with:
+//   package.json  { "main": "dist/lib.js" }
+//   tsconfig.json { "include": ["src"] }
+//   src/lib.ts    export function hello() {}
+//
+// buildGraph should classify lib.ts as isEntryPoint=true and certainty='unknown'.
 // ---------------------------------------------------------------------------
 
+let epFixtureDir = '';
+
+beforeAll(() => {
+  epFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'last-rites-ep-'));
+
+  // package.json — declares dist/lib.js as the main entry point
+  fs.writeFileSync(
+    path.join(epFixtureDir, 'package.json'),
+    JSON.stringify({ name: 'ep-fixture', main: 'dist/lib.js' }),
+  );
+
+  // tsconfig.json
+  fs.writeFileSync(
+    path.join(epFixtureDir, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        target: 'ES2022',
+        module: 'Node16',
+        moduleResolution: 'Node16',
+        strict: true,
+        rootDir: 'src',
+        outDir: 'dist',
+        skipLibCheck: true,
+      },
+      include: ['src'],
+    }),
+  );
+
+  // src/lib.ts — the entry-point source file
+  fs.mkdirSync(path.join(epFixtureDir, 'src'));
+  fs.writeFileSync(
+    path.join(epFixtureDir, 'src', 'lib.ts'),
+    'export function hello(): string { return "hello"; }\n',
+  );
+});
+
+afterAll(() => {
+  if (epFixtureDir) {
+    fs.rmSync(epFixtureDir, { recursive: true, force: true });
+  }
+});
+
 describe('entry-point protection', () => {
-  it('demo package.json has no entry point fields → no nodes are classified unknown due to entry-point', () => {
-    // demo/package.json has no main/exports/module/bin fields pointing to TS files.
-    // So no node should have evidence of kind 'entry-point'.
+  it('demo package.json has no entry-point fields → no nodes classified unknown via entry-point', () => {
     for (const node of graph.nodes.values()) {
-      const epEvidence = node.evidence.filter((e) => e.kind === 'entry-point');
-      expect(epEvidence).toHaveLength(0);
+      expect(node.evidence.filter((e) => e.kind === 'entry-point')).toHaveLength(0);
     }
   });
 
-  it('buildGraph correctly identifies the root project entry point (dist/cli.js → src/cli.ts)', async () => {
-    // Build graph over the root project (which has "main": "dist/cli.js").
-    const rootPath = path.resolve(__dirname, '../../');
-    const result = await buildGraph(rootPath);
-    // If it fails (e.g. type errors in src/), treat as inconclusive, not a failure.
+  it('file declared in package.json "main" is classified unknown, not candidate', async () => {
+    const result = await buildGraph(epFixtureDir);
+    expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // cli.ts is declared as entry point via "main": "dist/cli.js".
-    // Find any node whose file contains 'cli.ts'.
-    const cliNodes = Array.from(result.graph.nodes.values()).filter(
-      (n) => n.file.endsWith('cli.ts'),
+    // src/lib.ts is declared via "main": "dist/lib.js" → must be unknown, not candidate
+    const libNodes = Array.from(result.graph.nodes.values()).filter(
+      (n) => n.file.endsWith('lib.ts'),
     );
-
-    if (cliNodes.length > 0) {
-      for (const node of cliNodes) {
-        // Must be classified unknown (not candidate) because it's an entry point.
-        expect(node.certainty).not.toBe('candidate');
-        expect(node.isEntryPoint).toBe(true);
-      }
+    expect(libNodes.length).toBeGreaterThan(0);
+    for (const node of libNodes) {
+      expect(node.isEntryPoint).toBe(true);
+      expect(node.certainty).toBe('unknown');
+      expect(node.certainty).not.toBe('candidate');
+      expect(node.evidence.some((e) => e.kind === 'entry-point')).toBe(true);
     }
   });
 });

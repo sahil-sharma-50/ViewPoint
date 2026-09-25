@@ -74,7 +74,9 @@ function buildGraphSync(repoPath: string): ExportGraph {
   }
 
   // ── 2. Collect package.json entry points ─────────────────────────────────
-  const entryPoints = collectEntryPoints(repoPath);
+  // Pass compilerOptions so collectEntryPoints can remap dist/ → src/ paths.
+  // (parsedConfig.options is already available; program is created after this step.)
+  const entryPoints = collectEntryPoints(repoPath, parsedConfig.options);
 
   // ── 3. Create ts.Program ──────────────────────────────────────────────────
   const program = ts.createProgram({
@@ -103,55 +105,81 @@ function buildGraphSync(repoPath: string): ExportGraph {
   }
 
   // ── 5. Build nodes and edges ──────────────────────────────────────────────
-  // nodes: fileId → ExportNode
-  // edges: fileId → Set<fileId> (files this file imports)
+  // The graph is file-level: one or more nodes per file, but every production
+  // file that appears as an edge endpoint has at least one node so that edge
+  // sources and targets are always resolvable in graph.nodes.
+  //
+  // nodes: nodeId (file#name) → ExportNode
+  // edges: absFileId → Set<absFileId> (files this file imports)
   const nodes = new Map<string, ExportNode>();
   const edges = new Map<string, Set<string>>();
 
-  // Track which files have dynamic imports with non-literal specifiers.
+  // Track which production files have non-literal dynamic imports.
+  // Fix: if ANY production file has a non-literal dynamic import, we cannot
+  // know which other files it may load at runtime.  We record the set of
+  // *containing* files here; the classify pass uses anyDynamicUnknown to
+  // propagate the uncertainty to every fanIn===0 file that would otherwise
+  // be classified 'candidate'.
   const hasDynamicUnknown = new Set<string>();
   // Track barrel re-exports reaching node_modules.
   const hasBarrelReexport = new Set<string>();
 
   // First pass: collect exports and detect dynamic-import/barrel issues.
+  // Every internal production file gets at least one node (stub if no exports).
   for (const sf of program.getSourceFiles()) {
     const fileId = normalisePath(sf.fileName);
     if (!internalFiles.has(fileId)) continue;
-    if (sf.isDeclarationFile) continue; // skip .d.ts — handled below if needed
+    if (sf.isDeclarationFile) continue;
 
     const repoRelative = toRepoRelative(fileId, repoRoot);
 
     // Collect all top-level export declarations.
-    const exports = collectExports(sf);
+    const fileExports = collectExports(sf);
 
     // Walk for dynamic imports and barrel re-exports.
     walkDynamicImports(sf, hasDynamicUnknown, fileId);
     walkBarrelReexports(sf, hasBarrelReexport, fileId, program, internalFiles, repoRoot, parsedConfig.options);
 
-    if (exports.length === 0) continue; // no exports → skip node creation
-
-    const isSoleExport = exports.length === 1;
-
     // Entry-point detection.
     const epInfo = entryPoints.get(repoRelative);
     const isEntryPoint = epInfo !== undefined;
 
-    for (const exp of exports) {
-      const nodeId = `${repoRelative}#${exp.name}`;
-      const node: ExportNode = {
+    if (fileExports.length === 0) {
+      // No exports — create a stub node so the file exists in the graph.
+      // Files with no exports are never removal candidates (isSoleExport=false).
+      const stub = fileBaseName(repoRelative);
+      const nodeId = `${repoRelative}#${stub}`;
+      nodes.set(nodeId, {
         id: nodeId,
         file: repoRelative,
-        name: exp.name,
-        kind: exp.kind,
-        fanIn: 0,   // computed in second pass
-        fanOut: 0,  // computed after edges are built
-        isSoleExport,
+        name: stub,
+        kind: 'variable',
+        fanIn: 0,
+        fanOut: 0,
+        isSoleExport: false,
         isEntryPoint,
         entryPointKind: epInfo,
-        certainty: 'candidate', // placeholder; set in classify pass
+        certainty: 'candidate',
         evidence: [],
-      };
-      nodes.set(nodeId, node);
+      });
+    } else {
+      const isSoleExport = fileExports.length === 1;
+      for (const exp of fileExports) {
+        const nodeId = `${repoRelative}#${exp.name}`;
+        nodes.set(nodeId, {
+          id: nodeId,
+          file: repoRelative,
+          name: exp.name,
+          kind: exp.kind,
+          fanIn: 0,
+          fanOut: 0,
+          isSoleExport,
+          isEntryPoint,
+          entryPointKind: epInfo,
+          certainty: 'candidate',
+          evidence: [],
+        });
+      }
     }
 
     // Initialise edge set for this file.
@@ -230,6 +258,12 @@ function buildGraphSync(repoPath: string): ExportGraph {
   }
 
   // ── 7. Classify certainty ─────────────────────────────────────────────────
+  // If any production file contains a non-literal dynamic import, none of the
+  // fanIn===0 files can be confidently classified — the dynamic import may load
+  // any of them at runtime.  We propagate the uncertainty to every file that
+  // would otherwise be a 'candidate'.
+  const anyDynamicUnknown = hasDynamicUnknown.size > 0;
+
   for (const node of nodes.values()) {
     const fileId = toAbsoluteFileId(node.file, repoRoot);
 
@@ -247,9 +281,17 @@ function buildGraphSync(repoPath: string): ExportGraph {
     // fanIn === 0 — check unknown conditions.
     let hasUnknownCondition = false;
 
+    // This file itself has an unresolvable dynamic import.
     if (hasDynamicUnknown.has(fileId)) {
       hasUnknownCondition = true;
       node.evidence.push({ kind: 'dynamic-import', detail: 'file contains a dynamic import with a non-literal specifier' });
+    }
+
+    // Some OTHER file in the repo has an unresolvable dynamic import that
+    // might target this file — we cannot rule it out.
+    if (anyDynamicUnknown && !hasDynamicUnknown.has(fileId)) {
+      hasUnknownCondition = true;
+      node.evidence.push({ kind: 'dynamic-import', detail: 'repo contains a non-literal dynamic import that may target this file' });
     }
 
     if (hasBarrelReexport.has(fileId)) {
@@ -408,7 +450,10 @@ function resolveImport(
 // Entry-point collection from package.json
 // ---------------------------------------------------------------------------
 
-function collectEntryPoints(repoPath: string): Map<string, EntryPointKind> {
+function collectEntryPoints(
+  repoPath: string,
+  compilerOptions: ts.CompilerOptions,
+): Map<string, EntryPointKind> {
   const pkgPath = path.join(repoPath, 'package.json');
   const result = new Map<string, EntryPointKind>();
 
@@ -421,15 +466,41 @@ function collectEntryPoints(repoPath: string): Map<string, EntryPointKind> {
     return result;
   }
 
+  // Compute the outDir → rootDir remapping so "dist/lib.js" → "src/lib.ts".
+  // ts.CompilerOptions stores paths as absolute strings; make them repo-relative.
+  const repoNorm = normalisePath(repoPath);
+  const rawOutDir = compilerOptions.outDir
+    ? normalisePath(compilerOptions.outDir).replace(repoNorm + '/', '')
+    : null;
+  const rawRootDir = compilerOptions.rootDir
+    ? normalisePath(compilerOptions.rootDir).replace(repoNorm + '/', '')
+    : null;
+
   function addResolved(raw: string, kind: EntryPointKind): void {
-    // Strip leading './' and .js extension; try multiple TS extensions.
-    const stripped = raw.replace(/^\.\//, '').replace(/\.js$/, '');
-    for (const ext of ['.ts', '.tsx', '']) {
-      const candidate = stripped + ext;
-      result.set(candidate, kind);
+    const stripped = raw.replace(/^\.\//, '');
+
+    // Candidates to register: as-is (no-ext and with .js stripped), plus
+    // outDir→rootDir remapped version with TS extensions.
+    const candidates = new Set<string>();
+    candidates.add(stripped);
+    // Strip .js and add .ts/.tsx variants.
+    const noJs = stripped.replace(/\.js$/, '');
+    candidates.add(noJs);
+    candidates.add(noJs + '.ts');
+    candidates.add(noJs + '.tsx');
+
+    // If the path starts with outDir, also register with rootDir prefix.
+    if (rawOutDir && rawRootDir && stripped.startsWith(rawOutDir + '/')) {
+      const rel = stripped.slice(rawOutDir.length + 1);
+      const relNoJs = rel.replace(/\.js$/, '');
+      candidates.add(rawRootDir + '/' + relNoJs + '.ts');
+      candidates.add(rawRootDir + '/' + relNoJs + '.tsx');
+      candidates.add(rawRootDir + '/' + relNoJs);
     }
-    // Also store as-is (repo-relative without leading ./).
-    result.set(raw.replace(/^\.\//, ''), kind);
+
+    for (const c of candidates) {
+      result.set(c, kind);
+    }
   }
 
   function processValue(value: unknown, kind: EntryPointKind): void {
@@ -457,6 +528,16 @@ function collectEntryPoints(repoPath: string): Map<string, EntryPointKind> {
 /** Normalise slashes to forward-slash for cross-platform consistency. */
 function normalisePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/$/, '');
+}
+
+/**
+ * Return the base filename without extension for use as a stub node name.
+ * e.g. "src/index.ts" → "index", "src/features/darkMode.ts" → "darkMode"
+ */
+function fileBaseName(repoRelative: string): string {
+  const base = repoRelative.split('/').pop() ?? repoRelative;
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(0, dot) : base;
 }
 
 /**
