@@ -1,13 +1,29 @@
 /**
  * src/__tests__/clone-repo.test.ts
  *
- * Unit tests for cloneRepo and isValidGitHubUrl.
+ * Unit tests for cloneRepo, isValidGitHubUrl, canonicalGitHubUrl,
+ * computeTsSourceSize, and DEFAULT_MAX_BYTES.
  *
  * All external I/O (execFile, fs/promises) is mocked — no real git calls.
+ * See clone-repo.integration.test.ts for a live clone smoke test.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isValidGitHubUrl } from '../clone-repo.js';
+import {
+  isValidGitHubUrl,
+  canonicalGitHubUrl,
+  DEFAULT_MAX_BYTES,
+} from '../clone-repo.js';
+
+// ---------------------------------------------------------------------------
+// DEFAULT_MAX_BYTES — verify the plan-specified 50 MB limit
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_MAX_BYTES', () => {
+  it('is exactly 50 MB', () => {
+    expect(DEFAULT_MAX_BYTES).toBe(50 * 1024 * 1024);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // isValidGitHubUrl — pure URL validation (no I/O)
@@ -48,6 +64,37 @@ describe('isValidGitHubUrl', () => {
   it('rejects non-URL garbage strings', () => {
     expect(isValidGitHubUrl('not-a-url')).toBe(false);
     expect(isValidGitHubUrl('')).toBe(false);
+  });
+
+  it('rejects URLs with embedded credentials', () => {
+    expect(isValidGitHubUrl('https://user:pass@github.com/owner/repo')).toBe(false);
+    expect(isValidGitHubUrl('https://token@github.com/owner/repo')).toBe(false);
+  });
+
+  it('rejects URLs with a query string', () => {
+    expect(isValidGitHubUrl('https://github.com/owner/repo?tab=readme')).toBe(false);
+  });
+
+  it('rejects URLs with a fragment', () => {
+    expect(isValidGitHubUrl('https://github.com/owner/repo#readme')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canonicalGitHubUrl — strips extra URL components
+// ---------------------------------------------------------------------------
+
+describe('canonicalGitHubUrl', () => {
+  it('returns https://github.com/<owner>/<repo> for a clean URL', () => {
+    expect(canonicalGitHubUrl('https://github.com/owner/repo')).toBe(
+      'https://github.com/owner/repo',
+    );
+  });
+
+  it('strips a trailing slash', () => {
+    expect(canonicalGitHubUrl('https://github.com/owner/repo/')).toBe(
+      'https://github.com/owner/repo',
+    );
   });
 });
 
@@ -95,7 +142,7 @@ import { cloneRepo } from '../clone-repo.js';
 
 // The module calls the promisified execFile as: execFile(cmd, args, opts)
 // Our promisify wrapper does: Promise.resolve(fn(cmd, args, opts))
-// So the mock must be synchronous and return a value (or throw).
+// So the mock must be synchronous — return a value (success) or throw (failure).
 function execFileSucceeds() {
   mockExecFile.mockReturnValue(undefined); // resolves to undefined
 }
@@ -113,6 +160,8 @@ beforeEach(() => {
 });
 
 describe('cloneRepo', () => {
+  // --- URL rejection (no I/O) ---
+
   it('returns INVALID_URL for a non-URL string', async () => {
     const result = await cloneRepo('not-a-url');
     expect(result).toEqual({ ok: false, error: 'INVALID_URL' });
@@ -124,6 +173,56 @@ describe('cloneRepo', () => {
     expect(result).toEqual({ ok: false, error: 'INVALID_URL' });
     expect(cp.execFile).not.toHaveBeenCalled();
   });
+
+  it('returns INVALID_URL for a URL with credentials', async () => {
+    const result = await cloneRepo('https://user:pass@github.com/owner/repo');
+    expect(result).toEqual({ ok: false, error: 'INVALID_URL' });
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
+  it('returns INVALID_URL for a URL with a query string', async () => {
+    const result = await cloneRepo('https://github.com/owner/repo?ref=main');
+    expect(result).toEqual({ ok: false, error: 'INVALID_URL' });
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
+  it('returns INVALID_URL for a URL with a fragment', async () => {
+    const result = await cloneRepo('https://github.com/owner/repo#readme');
+    expect(result).toEqual({ ok: false, error: 'INVALID_URL' });
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
+  // --- mkdtemp failure ---
+
+  it('returns CLONE_FAILED (no throw) when mkdtemp fails', async () => {
+    mockMkdtemp.mockRejectedValue(new Error('EACCES: permission denied'));
+
+    const result = await cloneRepo('https://github.com/owner/repo');
+
+    expect(result).toEqual({ ok: false, error: 'CLONE_FAILED' });
+    expect(cp.execFile).not.toHaveBeenCalled();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  // --- canonical URL passed to git ---
+
+  it('passes the canonical URL to git, not the raw user input', async () => {
+    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-canonical');
+    execFileSucceeds();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockReaddir.mockResolvedValue([] as any);
+
+    // Input has a trailing slash; git must receive the clean canonical form.
+    await cloneRepo('https://github.com/owner/repo/');
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['clone', '--depth=1', 'https://github.com/owner/repo', '/tmp/last-rites-clone-canonical'],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+  });
+
+  // --- clone failure ---
 
   it('returns CLONE_FAILED and cleans up when git clone fails', async () => {
     mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-abc');
@@ -138,18 +237,30 @@ describe('cloneRepo', () => {
     });
   });
 
-  it('returns SIZE_EXCEEDED and cleans up when repo exceeds the size limit', async () => {
+  it('still returns CLONE_FAILED even when cleanup rm throws', async () => {
+    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-rmfail');
+    execFileFails();
+    mockRm.mockRejectedValue(new Error('rm failed'));
+
+    // Must not throw — rm failure is swallowed.
+    const result = await cloneRepo('https://github.com/owner/repo');
+    expect(result).toEqual({ ok: false, error: 'CLONE_FAILED' });
+  });
+
+  // --- size enforcement (TS-source-only) ---
+
+  it('returns SIZE_EXCEEDED and cleans up when TS source exceeds the limit', async () => {
     mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-xyz');
     execFileSucceeds();
 
-    // Single 200-byte file inside the clone.
+    // One .ts file of 200 bytes.
     mockReaddir.mockResolvedValue([
       { name: 'bigfile.ts', isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any);
     mockLstat.mockResolvedValue({ size: 200 } as Awaited<ReturnType<typeof fsp.lstat>>);
 
-    // maxBytes = 100 → 200-byte file exceeds the limit.
+    // maxBytes = 100 → 200-byte .ts file exceeds the limit.
     const result = await cloneRepo('https://github.com/owner/repo', 100);
 
     expect(result).toEqual({ ok: false, error: 'SIZE_EXCEEDED' });
@@ -158,6 +269,25 @@ describe('cloneRepo', () => {
       force: true,
     });
   });
+
+  it('does NOT count non-TS files toward the size limit', async () => {
+    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-nonts');
+    execFileSucceeds();
+
+    // A large JS file — must not count toward TS source limit.
+    mockReaddir.mockResolvedValue([
+      { name: 'bundle.js', isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    mockLstat.mockResolvedValue({ size: 999_999_999 } as Awaited<ReturnType<typeof fsp.lstat>>);
+
+    // maxBytes = 1 — JS file must not trigger SIZE_EXCEEDED.
+    const result = await cloneRepo('https://github.com/owner/repo', 1);
+
+    expect(result).toEqual({ ok: true, path: '/tmp/last-rites-clone-nonts' });
+  });
+
+  // --- success path ---
 
   it('returns { ok: true, path } on a successful clone within the size limit', async () => {
     mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-ok');
@@ -171,17 +301,19 @@ describe('cloneRepo', () => {
     expect(mockRm).not.toHaveBeenCalled();
   });
 
+  // --- symlink safety ---
+
   it('skips symlinks when computing directory size', async () => {
     mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-sym');
     execFileSucceeds();
 
-    // One symlink entry pointing to an enormous target — must be skipped.
+    // Symlink whose target would be enormous — must be ignored.
     mockReaddir.mockResolvedValue([
       { name: 'link.ts', isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any);
     // lstat must never be called for a symlink.
-    mockLstat.mockRejectedValue(new Error('lstat should not be called for symlinks'));
+    mockLstat.mockRejectedValue(new Error('lstat must not be called for symlinks'));
 
     // maxBytes = 1; if symlink were followed, SIZE_EXCEEDED would fire.
     const result = await cloneRepo('https://github.com/owner/repo', 1);
