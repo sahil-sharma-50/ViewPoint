@@ -1,0 +1,15 @@
+# Local hackathon research
+/hackathon-description.md
+/docs/ibm-bob-2-hackathon-guide.md
+/docs/previous-winners-study.md
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.log
