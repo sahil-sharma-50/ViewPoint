@@ -214,6 +214,52 @@ describe('formatDate.ts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Literal dynamic imports — regression fixture
+//
+// demo/src/loader.ts uses: import('./features/lazyFeature.js')
+// This is a string-literal specifier, so the analyser must:
+//   - Resolve it to src/features/lazyFeature.ts
+//   - Record a directed edge loader.ts → lazyFeature.ts
+//   - Count lazyFeature.ts as having fanIn === 1 (it has a known caller)
+//   - Classify lazyFeature.ts as 'unsafe', NOT 'candidate'
+//
+// Non-literal dynamic imports continue to be classified 'unknown'.
+// ---------------------------------------------------------------------------
+
+describe('literal dynamic import (loader.ts → lazyFeature.ts)', () => {
+  it('lazyFeature.ts has fanIn === 1 (loaded by loader.ts via import(string))', () => {
+    const node = findNode(graph, 'lazyFeature', 'lazyFeature');
+    expect(node).toBeDefined();
+    expect(node!.fanIn).toBe(1);
+  });
+
+  it('lazyFeature.ts is classified unsafe, not candidate', () => {
+    const node = findNode(graph, 'lazyFeature', 'lazyFeature');
+    expect(node!.certainty).toBe('unsafe');
+    expect(node!.certainty).not.toBe('candidate');
+  });
+
+  it('loader.ts → lazyFeature.ts directed edge exists in graph.edges', () => {
+    const nodeFiles = allNodeFiles(graph);
+    const loaderFile = [...nodeFiles].find((f) => f.endsWith('loader.ts'));
+    const lazyFile = [...nodeFiles].find((f) => f.includes('lazyFeature'));
+    expect(loaderFile).toBeDefined();
+    expect(lazyFile).toBeDefined();
+
+    const targets = graph.edges.get(loaderFile!);
+    expect(targets).toBeDefined();
+    expect(targets!.has(lazyFile!)).toBe(true);
+  });
+
+  it('loader.ts evidence for lazyFeature includes internal-ref', () => {
+    const node = findNode(graph, 'lazyFeature', 'lazyFeature');
+    const internalRefs = node!.evidence.filter((e) => e.kind === 'internal-ref');
+    expect(internalRefs.length).toBeGreaterThan(0);
+    expect(internalRefs.some((e) => e.detail.includes('loader.ts'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Entry-point protection — self-contained temp-dir fixture.
 //
 // We create a minimal repo with:

@@ -198,7 +198,7 @@ function buildGraphSync(repoPath: string): ExportGraph {
 
     const fileEdges = edges.get(fileId) ?? new Set<string>();
 
-    // Walk import declarations.
+    // Walk static import / re-export declarations.
     ts.forEachChild(sf, (node) => {
       if (
         ts.isImportDeclaration(node) ||
@@ -217,6 +217,16 @@ function buildGraphSync(repoPath: string): ExportGraph {
         fileEdges.add(normResolved);
       }
     });
+
+    // Walk the full AST for literal dynamic imports: import('./feature.js').
+    // These count as real incoming edges — a file loaded via import(string)
+    // has a known caller and must not be classified as a retirement candidate.
+    for (const target of collectLiteralDynamicEdges(sf, parsedConfig.options)) {
+      const normTarget = normalisePath(target);
+      if (internalFiles.has(normTarget)) {
+        fileEdges.add(normTarget);
+      }
+    }
 
     edges.set(fileId, fileEdges);
   }
@@ -392,6 +402,40 @@ function walkDynamicImports(
     ts.forEachChild(node, visit);
   }
   ts.forEachChild(sf, visit);
+}
+
+/**
+ * Walk the full AST of `sf` and collect resolved file paths for every
+ * `import(stringLiteral)` call expression.  Only string-literal specifiers
+ * are handled here; non-literal specifiers are left for walkDynamicImports.
+ *
+ * Returns absolute normalised file paths (no guarantee they are internal —
+ * the caller must filter).
+ */
+function collectLiteralDynamicEdges(
+  sf: ts.SourceFile,
+  compilerOptions: ts.CompilerOptions,
+): string[] {
+  const result: string[] = [];
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      const specifier = (node.arguments[0] as ts.StringLiteral).text;
+      const resolved = resolveImport(specifier, sf.fileName, compilerOptions);
+      if (resolved) {
+        result.push(resolved);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  ts.forEachChild(sf, visit);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
