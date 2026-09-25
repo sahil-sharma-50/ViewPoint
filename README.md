@@ -1,25 +1,116 @@
 # Last Rites
 
-A controlled demolition simulator for software.
+> A controlled demolition simulator for TypeScript codebases.
 
-Last Rites is being built to help developers identify retirement candidates, inspect dependencies, rehearse supported code removals, and export a reviewable patch with reproducible evidence.
+Last Rites statically analyses a public GitHub TypeScript repository, identifies retirement candidates (exports with no known internal consumers), previews whole-file removal using in-process TypeScript diagnostics, and produces a reviewable unified diff patch — without executing any user scripts.
 
-## Planned workflow
+Built for the IBM Bob 2.0 Hackathon.
 
-1. Select a GitHub repository and revision.
-2. Explore retirement candidates on an interactive dependency map.
-3. Preview affected code, shared dependencies, and unresolved references.
-4. Rehearse a supported removal in an isolated environment.
-5. Review the patch and compare build and test results with the original revision.
+---
 
-The initial scope is TypeScript repositories, with supported feature flags and declared entry points. Analysis and transformations use explicit rules and graph algorithms; the product requires no LLM at runtime. Unknown dynamic behavior and external consumers remain explicit limitations. Passing checks does not establish universal deletion safety.
+## Quick start
 
-## Status
+### Prerequisites
 
-Project setup only. The application is not implemented yet.
+- Node.js 20+
+- Git (for cloning target repositories)
 
-Development is planned with IBM Bob IDE for the IBM Bob 2.0 Hackathon. Relevant Bob task session summary screenshots will be included in `bob_sessions/` as development proceeds.
+### Install
 
-## License
+```bash
+npm install
+```
 
-MIT. See [LICENSE](LICENSE).
+### Build
+
+```bash
+npm run build        # compiles src/ → dist/
+```
+
+### Run CLI
+
+```bash
+node dist/cli.js                         # prints "Last Rites v0.1"
+npm run analyse -- --url <github-url>    # full pipeline (Task 6+)
+```
+
+### Run tests
+
+```bash
+npm test             # vitest — root project tests
+```
+
+### Run evaluation (Task 6+)
+
+```bash
+npm run evaluate     # runs pipeline against demo/, writes evaluation-results.md
+```
+
+### Start web server (Task 6+)
+
+```bash
+npm run start        # Express server on http://localhost:3000
+```
+
+---
+
+## Demo fixture
+
+`demo/` contains a purpose-built TypeScript app used for integration tests and the evaluation script.
+
+```
+demo/src/
+  features/
+    newDashboard.ts   ← candidate (fanIn: 0, isSoleExport: true)
+    legacyExport.ts   ← candidate (fanIn: 0, isSoleExport: true)
+    darkMode.ts       ← unsafe   (fanIn: 1, imported by index.ts)
+  utils/
+    formatDate.ts     ← unsafe   (fanIn: 3, imported by all three features)
+  index.ts            ← app entry point
+```
+
+```bash
+cd demo
+npm install
+npm run build    # tsc --noEmit → 0 errors
+npm test         # vitest → ≥ 6 tests pass
+```
+
+---
+
+## Certainty model
+
+| Label | Meaning |
+|-------|---------|
+| `candidate` | fanIn === 0, no unknown conditions, not a declared entry point. **Still requires human review** — external consumers are invisible to the internal import graph. |
+| `unknown` | Cannot be confidently classified (dynamic import, barrel re-export, .d.ts-only, or declared entry point). |
+| `unsafe` | fanIn > 0. Has at least one known internal consumer. |
+
+---
+
+## Architecture
+
+```
+CLI / Web UI
+  └─ clone-repo        → CloneResult
+       └─ analyse-repo → ExportGraph (nodes + edges + certainty + evidence)
+            └─ rehearse-removal → RehearsalResult (before/after diagnostics + delta + patch)
+                 └─ report-writer → report.html + removal.patch
+```
+
+---
+
+## Limitations
+
+- TypeScript repositories only (`tsconfig.json` must exist at root).
+- Whole-file removal only (partial export stripping is a stretch goal).
+- No user scripts executed — verification uses TypeScript diagnostics only.
+- Test results, build-tool results, and runtime behaviour are always `unknown`.
+- Repos exceeding 50 MB of TypeScript source are rejected.
+- Dynamic imports with non-literal specifiers → `unknown` classification.
+
+---
+
+## Hackathon submission
+
+See [`SUBMISSION.md`](SUBMISSION.md) (Task 7).

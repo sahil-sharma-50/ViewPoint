@@ -1,0 +1,52 @@
+{
+  "name": "last-rites",
+  "version": "0.1.0",
+  "description": "A controlled demolition simulator for TypeScript codebases.",
+  "type": "module",
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "start": "node dist/server.js",
+    "analyse": "tsx src/cli.ts",
+    "evaluate": "tsx scripts/evaluate.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sahil-sharma-50/last-rites.git"
+  },
+  "keywords": [
+    "typescript",
+    "static-analysis",
+    "dead-code"
+  ],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sahil-sharma-50/last-rites/issues"
+  },
+  "homepage": "https://github.com/sahil-sharma-50/last-rites#readme",
+  "dependencies": {
+    "diff": "^9.0.0",
+    "express": "^5.2.1",
+    "fs-extra": "^11.4.1",
+    "typescript": "^6.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@inquirer/select": "^5.2.5",
+    "@types/diff": "^7.0.2",
+    "@types/express": "^5.0.6",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^26.6.2",
+    "@typescript-eslint/eslint-plugin": "^8.70.1",
+    "@typescript-eslint/parser": "^8.70.1",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.9",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2"
+  }
+}
