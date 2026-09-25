@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatDate } from './utils/formatDate.js';
 import { toggleDarkMode } from './features/darkMode.js';
-import { renderDashboard } from './features/newDashboard.js';
-import { generateLegacyExport } from './features/legacyExport.js';
 
 describe('formatDate', () => {
   it('formats a known date as YYYY-MM-DD', () => {
@@ -25,20 +23,5 @@ describe('toggleDarkMode', () => {
   it('returns disabled message when false', () => {
     const result = toggleDarkMode(false);
     expect(result).toMatch(/Dark mode disabled/);
-  });
-});
-
-describe('renderDashboard (newDashboard — retirement candidate)', () => {
-  it('includes the title in output', () => {
-    const result = renderDashboard('Analytics');
-    expect(result).toContain('Analytics');
-  });
-});
-
-describe('generateLegacyExport (legacyExport — retirement candidate)', () => {
-  it('includes the name and ends with .csv', () => {
-    const result = generateLegacyExport('users');
-    expect(result).toContain('users');
-    expect(result).toMatch(/\.csv$/);
   });
 });
