@@ -424,41 +424,55 @@ curl localhost:3000/   # returns HTML
 
 ---
 
-### Task 7 — Render Deployment and Submission Artefacts
+### Task 7 — User-Led Local Verification and Final Fixes
 
 **Status:** `[ ] pending`  
-**Bobcoin estimate:** 4 | **Actual:** —
+**Bobcoin estimate:** 2 | **Actual:** —
 
 **Intent:**
-Deploy the web service to Render, verify the full workflow end-to-end at the public URL, and prepare all hackathon submission artefacts (Bob session screenshots are captured manually).
+Prepare the app for the participant to test manually on their own computer. The participant runs the browser workflow, records what works and what fails, and Bob fixes confirmed problems. Do not deploy or submit during this task.
 
-**Note on Render cold starts:** The free tier sleeps after inactivity — 30–60 s to wake. Add a "Waking service…" spinner to `public/index.html` and document this in `SUBMISSION.md`.
-
-**Note on Render sandbox:** Render's free web service allows `git clone` and temp-directory writes. If this proves false during deployment, the fallback is to embed the demo repo source as a bundled fixture and decline arbitrary URLs with a clear message.
+**Demo URL:** The application repository's root `tsconfig.json` excludes `demo/`, so it cannot showcase `newDashboard` through the URL form. Publish `demo/` as a separate public GitHub repository with its files at the root, then use that URL for manual local testing. Keep support for any valid public GitHub URL; this demo URL is not an allowlist.
 
 **Expected Outcomes:**
-- Service deployed; public URL returns `GET /` HTML.
-- End-to-end at public URL: submit demo repo URL → dependency view renders → preview `newDashboard` removal → report page loads with non-empty patch → patch file downloads.
-- `SUBMISSION.md` with all required fields: title, short description ≤ 500 words, long description ≤ 500 words, IBM Bob usage statement ≤ 500 words, Application URL, cover image note.
-- `evaluation-results.md` committed (from Task 6).
-- `bob_sessions/README.md` updated with instructions for adding screenshots.
-- Repository public; no secrets in any committed file; `render.yaml` contains no credentials.
+- Bob gives exact commands to start the latest local server and a short manual test checklist; the participant performs the browser clicks personally.
+- The local flow works with the separate demo URL: paste URL → inspect dependency view → preview `newDashboard` removal → open report → download patch.
+- The participant also tries a different public TypeScript GitHub URL and sees either a useful analysis or a clear unsupported-repo error.
+- Bob fixes issues the participant reports and reruns build, lint, tests, and evaluation after any code change.
+- No deployment, submission, or claim of live verification until the participant is satisfied with local behavior.
 
-**Todo List:**
-1. Push `render.yaml` to `main`; connect to Render; trigger deploy.
-2. Confirm no environment variables are required (prototype uses no API keys).
-3. Open public URL; run demo repo through full workflow; verify patch downloads.
-4. Add cold-start spinner to `public/index.html`.
-5. Draft `SUBMISSION.md`.
-6. Run `npm run evaluate`; commit final `evaluation-results.md`.
-7. Confirm repo is public; `git push origin main`.
+**Manual Test Checklist (participant):**
+1. Run `npm run build`, then `npm start`; open `http://localhost:3000/`.
+2. Paste the public demo URL; confirm the graph labels `newDashboard` as a candidate and `formatDate` as unsafe with three consumers.
+3. Click "Preview removal" for `newDashboard`; confirm zero new TypeScript errors and all three unknown checks in the report.
+4. Download `removal.patch`; confirm it is non-empty and refers to `newDashboard`.
+5. Repeat with another public TypeScript repository URL. Save screenshots and report any incorrect result or broken interaction to Bob.
 
 **Acceptance Check:**
-- Public URL returns the input form.
-- Demo repo URL → dependency view → rehearse `newDashboard` → patch downloads correctly.
-- `evaluation-results.md` committed; all assertions passing.
-- `SUBMISSION.md` all fields populated.
-- No secrets committed.
+- Participant confirms the complete flow works locally in the browser.
+- Build, lint, tests, and evaluation pass after final fixes.
+- The downloaded patch matches the selected file; no user scripts or LLMs run at runtime.
+
+---
+
+### Task 8 — Public Deployment and Submission Artefacts
+
+**Status:** `[ ] pending`
+**Bobcoin estimate:** 2 | **Actual:** —
+
+**Intent:**
+After the participant signs off on Task 7's local test, deploy the app, verify the same flow at the public URL, and prepare the submission. Keep arbitrary public GitHub URL support; do not replace it with a demo-only gate.
+
+**Expected Outcomes:**
+- Public application URL opens the input form and completes the demo URL → graph → rehearsal → report → patch flow.
+- A cold-start status is shown when necessary. If the chosen host cannot clone public repositories or use temporary storage, fix the deployment or choose a compatible host.
+- `SUBMISSION.md` contains the title, descriptions, IBM Bob usage, application URL, repository URL, and cover-image note; `evaluation-results.md` and Bob screenshots are committed.
+- A ≤3-minute video demonstrates the real workflow and measurable impact.
+- Repository is public, no secrets are committed, and final changes are pushed.
+
+**Acceptance Check:**
+- The participant repeats the full flow at the public URL and verifies the downloaded patch.
+- Submission files, screenshots, and video are ready for final review.
 
 ---
 
@@ -484,7 +498,8 @@ Bob session screenshots are captured manually by the developer after each task.
 | Task 4 — Dependency View (subagent) | 4 | — | |
 | Task 5 — Rehearsal (in-process, whole-file) | 7 | — | Simpler without user-script execution |
 | Task 6 — Server + CLI + Evaluation | 5 | — | |
-| Task 7 — Render Deploy + Submission | 4 | — | |
+| Task 7 — User-Led Local Verification | 2 | — | Participant tests in the browser before deployment |
+| Task 8 — Public Deployment + Submission | 2 | — | Starts after local sign-off |
 | Contingency | 7 | — | Increased; covers partial-file stretch goal |
 | **Total** | **40** | **0** | |
 
@@ -501,10 +516,11 @@ Task 1 (Scaffold + Types + Demo App)
         ├─ Task 4 (Dependency View) ← subagent, parallel with Task 5
         └─ Task 5 (Rehearsal Engine)
               └─ Task 6 (Server + CLI + Evaluation)
-                    └─ Task 7 (Render Deploy + Submission)
+                    └─ Task 7 (User-Led Local Verification)
+                          └─ Task 8 (Public Deployment + Submission)
 ```
 
-Tasks 2 and 3 start after Task 1. Tasks 4 and 5 start after Task 3. Task 6 requires all of Tasks 2, 4, and 5.
+Tasks 2 and 3 start after Task 1. Tasks 4 and 5 start after Task 3. Task 6 requires all of Tasks 2, 4, and 5. Task 8 starts only after the participant confirms Task 7's local test.
 
 ---
 
@@ -512,5 +528,5 @@ Tasks 2 and 3 start after Task 1. Tasks 4 and 5 start after Task 3. Task 6 requi
 
 1. Whether `ts.createProgram` loads the demo `tsconfig.json` without host overrides — confirmed by the Task 3 integration test.
 2. Whether the TS printer emits syntactically correct files after import removal — confirmed by `delta.newErrors.length === 0` in the Task 5 integration test.
-3. Whether Render allows `git clone` and temp-directory writes from a web service process — confirmed by Task 7 end-to-end test. Fallback: bundle demo repo as a fixture.
+3. Whether the deployment host allows `git clone` and temp-directory writes from a web service process — confirmed by Task 8's public end-to-end test. If it does not, use a compatible host rather than restricting arbitrary GitHub URLs.
 4. Exact Bobcoin cost per task — update Actual column as work completes.
