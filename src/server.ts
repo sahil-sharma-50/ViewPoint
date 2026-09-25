@@ -4,7 +4,6 @@
  * Routes:
  *   GET /              → interactive dependency-map UI (HTML)
  *   GET /api/graph     → serialised ExportGraph as JSON
- *   POST /api/graph    → { repoPath } → build and return graph JSON
  *
  * The graph is serialised with edges as { source: file, targets: file[] }
  * so that the browser can map them to nodes via node.file.
@@ -121,7 +120,6 @@ export function serialiseGraph(graph: ExportGraph): SerialGraph {
 
 export function createApp(demoGraph: ExportGraph): express.Application {
   const app = express();
-  app.use(express.json());
 
   // Serve the interactive dependency-map UI.
   app.get('/', (_req, res) => {
@@ -133,21 +131,6 @@ export function createApp(demoGraph: ExportGraph): express.Application {
   // GET /api/graph — return the pre-built demo graph.
   app.get('/api/graph', (_req, res) => {
     res.json(serialiseGraph(demoGraph));
-  });
-
-  // POST /api/graph — build a graph for a given repoPath.
-  app.post('/api/graph', async (req, res) => {
-    const { repoPath } = req.body as { repoPath?: unknown };
-    if (typeof repoPath !== 'string' || !repoPath.trim()) {
-      res.status(400).json({ ok: false, error: 'repoPath is required' });
-      return;
-    }
-    const result = await buildGraph(repoPath.trim());
-    if (!result.ok) {
-      res.status(422).json({ ok: false, error: result.error });
-      return;
-    }
-    res.json({ ok: true, graph: serialiseGraph(result.graph) });
   });
 
   return app;

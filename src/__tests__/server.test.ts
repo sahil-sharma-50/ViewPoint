@@ -4,9 +4,7 @@
  * Tests:
  *   - GET /        → 200 text/html with graph data embedded
  *   - GET /api/graph → 200 JSON with nodes[] and edges[]
- *   - POST /api/graph with valid repoPath → 200 JSON with graph
- *   - POST /api/graph with missing repoPath → 400
- *   - POST /api/graph with invalid repoPath → 422
+ *   - POST /api/graph cannot analyse arbitrary server filesystem paths
  *
  * Uses Node.js built-in http.createServer + http.request to talk to the live
  * Express app so no external test-http library is required.
@@ -219,28 +217,9 @@ describe('GET /api/graph', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/graph', () => {
-  it('returns 400 when repoPath is missing', async () => {
-    const res = await httpRequest(port, 'POST', '/api/graph', {});
-    expect(res.status).toBe(400);
-    const data = JSON.parse(res.body) as { ok: boolean };
-    expect(data.ok).toBe(false);
-  });
-
-  it('returns 422 for a path that has no tsconfig.json', async () => {
-    const res = await httpRequest(port, 'POST', '/api/graph', { repoPath: '/nonexistent/path/xyz' });
-    expect(res.status).toBe(422);
-    const data = JSON.parse(res.body) as { ok: boolean; error: string };
-    expect(data.ok).toBe(false);
-    expect(typeof data.error).toBe('string');
-  });
-
-  it('returns 200 with ok:true and graph for the demo repo', async () => {
+  it('does not accept a client-supplied local path', async () => {
     const res = await httpRequest(port, 'POST', '/api/graph', { repoPath: DEMO_PATH });
-    expect(res.status).toBe(200);
-    const data = JSON.parse(res.body) as { ok: boolean; graph: { nodes: unknown[] } };
-    expect(data.ok).toBe(true);
-    expect(Array.isArray(data.graph.nodes)).toBe(true);
-    expect(data.graph.nodes.length).toBeGreaterThan(0);
+    expect(res.status).toBe(404);
   });
 });
 
