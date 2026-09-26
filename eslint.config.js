@@ -6,7 +6,14 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ['dist/**', 'node_modules/**', 'demo/**'],
+    ignores: ['dist/**', 'node_modules/**'],
+  },
+  {
+    files: ['app/**/*.js'],
+    languageOptions: { globals: Object.fromEntries([
+      'AbortController', 'Blob', 'ClipboardItem', 'document', 'getComputedStyle', 'Image', 'innerWidth',
+      'matchMedia', 'navigator', 'ResizeObserver', 'setInterval', 'clearInterval', 'setTimeout', 'URL', 'XMLSerializer',
+    ].map(name => [name, 'readonly'])) },
   },
   {
     rules: {

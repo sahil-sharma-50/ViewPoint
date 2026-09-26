@@ -1,0 +1,288 @@
+.architecture-page.repository-workspace {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.architecture-shell.vp-main {
+  width: 100%;
+  max-width: none;
+  padding: 12px 16px 16px;
+  margin: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.architecture-page .brand-group { max-width: 70%; }
+.architecture-page .vp-titlebar { flex: none; align-items: center; margin: 0 2px 12px; }
+.architecture-page .vp-titlebar h1 { font-size: 26px; }
+.architecture-page .vp-titlebar h1 + p { margin-top: 3px; }
+.architecture-page .site-footer { display: none; }
+.architecture-page .flow-section { width: 100%; flex: 1; min-height: 0; }
+.architecture-page .diagram-browser { flex: none; padding: 15px 18px 13px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 40%, var(--surface)); }
+.architecture-page .diagram-browser-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 12px; }
+.architecture-page .diagram-eyebrow { display: block; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.architecture-page .diagram-browser h2 { margin-top: 2px; font-size: 17px; font-weight: 600; letter-spacing: -.45px; }
+.architecture-page #diagram-view-total { display: inline-grid; place-items: center; min-width: 22px; height: 19px; padding: 0 5px; margin-left: 5px; border-radius: 5px; background: var(--surface2); color: var(--muted); font-size: 11px; letter-spacing: 0; vertical-align: 2px; }
+.architecture-page .diagram-cards { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-inline: contain; scroll-snap-type: x proximity; scrollbar-width: none; }
+.architecture-page .diagram-cards::-webkit-scrollbar { display: none; }
+.architecture-page .diagram-card { position: relative; flex: 1 0 clamp(196px, 15vw, 250px); min-height: 96px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); text-align: left; scroll-snap-align: start; overflow: hidden; }
+.architecture-page .diagram-card-top { display: flex; align-items: center; gap: 8px; color: var(--muted); line-height: 1; }
+.architecture-page .diagram-card-top b { font: 500 11px ui-monospace, Consolas, monospace; color: var(--accent); }
+.architecture-page .diagram-card-top small { font-size: 9px; font-weight: 650; letter-spacing: .09em; }
+.architecture-page .diagram-card strong { display: block; margin-top: 12px; font-size: 14px; font-weight: 600; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.architecture-page .diagram-card-stats { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.architecture-page .diagram-card:hover { border-color: color-mix(in srgb, var(--accent) 65%, var(--border)); transform: translateY(-1px); }
+.architecture-page .diagram-card[aria-pressed='true'] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); box-shadow: inset 0 2px 0 var(--accent); }
+
+.architecture-page .flow-section {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.architecture-page .flow-controls {
+  padding: 18px 22px 8px;
+}
+
+.architecture-page .diagram-select-label select {
+  border-color: var(--border);
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.architecture-page .diagram-key {
+  height: 36px;
+  padding: 0 22px 10px;
+  font-size: 11px;
+}
+
+.architecture-page .diagram-shell {
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.architecture-page .diagram-viewport {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  scrollbar-width: none;
+  min-height: max(440px, calc(100dvh - 325px));
+  background: color-mix(in srgb, var(--bg) 50%, var(--surface));
+}
+.architecture-page .diagram-viewport::-webkit-scrollbar { display: none; }
+.architecture-page #diagram-space { flex: none; margin: auto; }
+.architecture-page #architecture-edges { pointer-events: none; }
+.architecture-page .system-edge-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.architecture-page .system-node.dimmed, .architecture-page .system-edge.dimmed { opacity: .22; }
+.architecture-page .system-node, .architecture-page .system-edge { transition: opacity .18s, background .18s, border-color .18s; }
+.architecture-page .system-edge.trace { opacity: 1; stroke-width: 3; stroke-dasharray: 9 6; animation: route-trace .8s linear infinite; }
+@keyframes route-trace { to { stroke-dashoffset: -30; } }
+.architecture-page .diagram-tools { position: sticky; left: 12px; top: 12px; z-index: 5; align-self: flex-start; display: flex; gap: 4px; margin-right: -300px; }
+.architecture-page .diagram-tools button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; min-width: 34px; height: 34px; padding: 0 8px; font-size: 12px; }
+.architecture-page .diagram-tools button:hover { border-color: var(--accent); }
+.architecture-page .diagram-export { position: relative; }
+.architecture-page .diagram-export summary { display: grid; place-items: center; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; list-style: none; font-size: 12px; }
+.architecture-page .diagram-export summary::-webkit-details-marker { display: none; }
+.architecture-page .diagram-export summary:hover, .architecture-page .diagram-export summary:focus-visible { border-color: var(--accent); }
+.architecture-page .diagram-export-menu { position: absolute; top: 39px; left: 0; display: grid; gap: 2px; width: 150px; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 12px 28px #0004; }
+.architecture-page .diagram-export-menu button { width: 100%; text-align: left; border: 0; }
+.architecture-page #diagram-export-status { position: absolute; top: 40px; left: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface); color: var(--muted); font-size: 11px; white-space: nowrap; }
+.architecture-page #diagram-export-status:empty { display: none; }
+.architecture-page .diagram-inspector { position: sticky; z-index: 5; right: 12px; bottom: 12px; align-self: flex-end; flex: none; display: block; width: min(360px, 32vw); max-height: min(72vh, 550px); overflow: auto; padding: 20px; margin-left: -360px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 50px #0005; }
+.architecture-page .diagram-inspector #inspector-close { float: right; width: 28px; height: 28px; border: 0; border-radius: 5px; background: var(--surface2); font-size: 20px; line-height: 1; }
+.architecture-page .diagram-inspector h2 { margin: 8px 0; }
+.architecture-page .flow-steps { display: grid; grid-template-columns: 1fr; margin-top: 14px; }
+.architecture-page .flow-step-button { min-height: 42px; }
+.architecture-page .flow-step-button small, .architecture-page .flow-step-button strong { white-space: normal; }
+.architecture-page .flow-section:fullscreen { background: var(--surface); height: 100dvh; }
+.architecture-page .flow-section:fullscreen .diagram-viewport { min-height: calc(100dvh - 155px); }
+@media (prefers-reduced-motion: reduce) { .architecture-page .system-edge.trace { animation: none; } }
+
+.architecture-page .system-node {
+  border-radius: 10px;
+}
+
+.architecture-page .diagram-details summary {
+  padding: 16px 22px;
+}
+
+.architecture-page .site-footer {
+  height: auto;
+  min-height: 48px;
+  padding: 14px 30px;
+  background: var(--bg);
+  border: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 740px) {
+  .architecture-shell.vp-main { padding: 6px 8px 10px; }
+  .architecture-page .brand-group { max-width: 70%; }
+  .architecture-page .header-repo { max-width: 145px; }
+  .architecture-page .vp-titlebar { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .architecture-page .vp-titlebar h1 { font-size: 23px; }
+  .architecture-page .diagram-browser { padding: 12px 10px; }
+  .architecture-page .diagram-browser-head { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .architecture-page .diagram-browser h2 { font-size: 15px; }
+  .architecture-page .diagram-card { flex-basis: 186px; min-height: 86px; }
+  .architecture-page .flow-controls { padding: 14px 14px 4px; flex-direction: column; align-items: stretch; }
+  .architecture-page .diagram-key { padding: 0 14px 8px; gap: 10px; font-size: 10px; }
+  .architecture-page .diagram-viewport { min-height: 430px; }
+  .architecture-page .diagram-tools { left: 8px; top: 8px; margin-right: -270px; }
+  .architecture-page .diagram-tools button { min-width: 30px; height: 30px; font-size: 10px; padding: 0 6px; }
+  .architecture-page .diagram-export summary { height: 30px; padding: 0 6px; font-size: 10px; }
+  .architecture-page .diagram-inspector { position: fixed; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 50dvh; margin: 0; }
+  .architecture-page .diagram-details summary { padding: 14px; }
+  .architecture-page .site-footer { padding: 14px; }
+}
+
+/* Compact atlas controls and neutral component labels. Selection carries emphasis. */
+.architecture-page .vp-titlebar{width:100%;justify-content:space-between;align-items:center}
+.architecture-page .diagram-browser{padding:9px 14px;background:var(--surface)}
+.architecture-page .diagram-browser-head{align-items:center;margin-bottom:8px}
+.architecture-page .diagram-eyebrow{display:none}
+.architecture-page .diagram-browser h2{font-size:13px;font-weight:550;letter-spacing:0}
+.architecture-page .diagram-cards{gap:5px}
+.architecture-page .diagram-card{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:0 0 auto;min-height:34px;padding:7px 10px;border-radius:6px;background:transparent}
+.architecture-page .diagram-card strong{margin:0;font-size:11px;font-weight:500}
+.architecture-page .diagram-card-stats{margin:0;font-size:10px}
+.architecture-page .diagram-card:hover{transform:none;background:var(--surface2);border-color:var(--border)}
+.architecture-page .diagram-card[aria-pressed='true']{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface));box-shadow:none}
+.architecture-page .flow-section{border-radius:8px}
+.architecture-page .diagram-viewport{min-height:0;flex:1}
+.architecture-page .system-node{width:190px;height:72px;padding:9px 11px;gap:3px;border:1px solid var(--border);border-radius:6px;background:var(--surface);box-shadow:none}
+.architecture-page .system-node small{color:var(--muted);font-weight:500;letter-spacing:.01em}
+.architecture-page .system-node:hover,.architecture-page .system-node:focus-visible{border-color:var(--accent);background:var(--surface2)}
+.architecture-page .system-node.active{border-color:var(--accent);background:var(--surface2)}
+.architecture-page .system-edge{opacity:.15;stroke-width:1.4}
+.architecture-page .system-edge[data-context='true']{opacity:.5}
+.architecture-page .system-edge.trace,.architecture-page .system-edge.active{opacity:1;stroke-width:2;stroke-dasharray:none;animation:none}
+.architecture-page .system-edge.dimmed{opacity:.04}
+.architecture-page #flow-files:not([hidden]){display:block;margin-top:16px;border-top:1px solid var(--border)}
+.architecture-page #flow-files>strong{display:block;margin:12px 0 4px;font-size:11px;font-weight:600;color:var(--muted)}
+.architecture-page #flow-files>p{margin:0 0 8px;color:var(--muted);font-size:11px}
+.architecture-page #flow-explanation[hidden]{display:none}
+.architecture-page .flow-file{display:grid;gap:4px;padding:10px 0;border-bottom:1px solid var(--border)}
+.architecture-page .flow-file b{font:600 12px/1.4 var(--font);overflow-wrap:anywhere}
+.architecture-page .flow-file span,.architecture-page .flow-file small{font-size:10px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+@media (min-width:741px){.architecture-page .vp-titlebar{flex-direction:row}}
+@media (max-width:740px){.architecture-page.repository-workspace{height:100dvh;min-height:0;overflow:hidden}.architecture-shell.vp-main{height:calc(100dvh - 56px)}.architecture-page .flow-section,.architecture-page .diagram-shell{min-height:0}.architecture-page .diagram-browser{padding:8px 10px}.architecture-page .diagram-browser-head{align-items:flex-start}.architecture-page .diagram-card{min-height:34px}.architecture-page .diagram-viewport{min-height:0;flex:1;overflow:auto}.architecture-page .system-node{width:214px;height:70px}}
+
+/* The current view reads as part of the map; controls stay outside its scroll area. */
+.architecture-page .diagram-shell { display: flex; flex-direction: column; }
+.architecture-page .diagram-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 22px; flex: none; padding: 13px 18px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.architecture-page .diagram-heading-row h3 { font-size: 16px; font-weight: 600; line-height: 1.2; }
+.architecture-page .diagram-heading-row p { max-width: 68ch; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.architecture-page .diagram-legend { display: flex; align-items: center; gap: 15px; flex: none; color: var(--muted); font-size: 11px; }
+.architecture-page .diagram-legend .key-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.architecture-page .diagram-legend i { width: 19px; border-top: 2px solid #6296e1; }
+.architecture-page .diagram-legend .key-http { border-color: #e5a76d; border-top-style: dashed; }
+.architecture-page .diagram-legend .key-deploy { border-color: #79b99a; }
+.architecture-page .diagram-legend .key-state { border-color: #c39ae6; }
+.architecture-page .diagram-stage { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.architecture-page .diagram-stage .diagram-viewport { width: 100%; flex: 1; min-height: 0; }
+.architecture-page .diagram-tools { position: absolute; top: auto; right: auto; bottom: 12px; left: 12px; display: flex; flex-direction: row; align-self: auto; gap: 1px; width: max-content; padding: 3px; margin: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 18px #0003; }
+.architecture-page .diagram-tools button { display: grid; place-items: center; width: 30px; min-width: 0; height: 30px; padding: 0; border: 0; background: transparent; font-size: 12px; }
+.architecture-page .diagram-tools button:hover { border: 0; background: var(--surface2); }
+.architecture-page .diagram-export summary { width: 30px; height: 30px; padding: 0; border: 0; background: transparent; font-size: 17px; }
+.architecture-page .diagram-export summary:hover, .architecture-page .diagram-export summary:focus-visible { border: 0; background: var(--surface2); }
+.architecture-page .diagram-export-menu { top: auto; right: auto; bottom: 36px; left: 0; }
+.architecture-page .diagram-export-menu button { display: block; width: 100%; height: 34px; padding: 0 8px; text-align: left; font-size: 11px; }
+.architecture-page #diagram-export-status { top: auto; right: auto; bottom: 36px; left: 0; }
+.architecture-page .system-node small { color: var(--node-color, var(--muted)); font-weight: 600; }
+.architecture-page .system-edge { opacity: .52; }
+.architecture-page .system-edge[data-context='true'] { opacity: .72; }
+.architecture-page .flow-file { grid-template-columns: minmax(0, 1fr) auto; }
+.architecture-page .flow-file b { grid-column: 1; }
+.architecture-page .flow-file a { grid-column: 2; grid-row: 1; align-self: start; color: var(--accent); font-size: 10px; white-space: nowrap; }
+.architecture-page .flow-file span, .architecture-page .flow-file small { grid-column: 1 / -1; }
+@media (max-width: 740px) {
+  .architecture-page .diagram-heading-row { align-items: flex-start; flex-direction: column; gap: 8px; padding: 10px 12px; }
+  .architecture-page .diagram-heading-row h3 { font-size: 14px; }
+  .architecture-page .diagram-heading-row p { font-size: 10px; }
+  .architecture-page .diagram-tools { top: auto; right: auto; bottom: 8px; left: 8px; width: max-content; margin: 0; }
+  .architecture-page .diagram-tools button, .architecture-page .diagram-export summary { width: 28px; height: 28px; }
+  .architecture-page .diagram-export-menu { right: auto; bottom: 34px; left: 0; }
+}
+
+/* The view list and key flank the map; the source summary stays in sight. */
+.architecture-page.repository-workspace { height: 100dvh; overflow: hidden; }
+.architecture-page .flow-section { display: grid; grid-template-columns: 216px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; }
+.architecture-page .vp-titlebar { min-height: 34px; margin-bottom: 7px; }
+.architecture-page .vp-titlebar h1 { font-size: 19px; letter-spacing: -.03em; }
+.architecture-page .architecture-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.architecture-page .architecture-title > span { color: var(--border); }
+.architecture-page .architecture-title p { margin: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.architecture-page .diagram-browser { display: flex; flex-direction: column; min-height: 0; padding: 16px 10px; border-right: 1px solid var(--border); border-bottom: 0; }
+.architecture-page .diagram-browser-head { flex: none; align-items: center; gap: 8px; padding: 0 4px; margin-bottom: 16px; }
+.architecture-page .diagram-browser h2 { margin: 0; font-size: 13px; }
+.architecture-page .diagram-cards { display: flex; flex: 1; flex-direction: column; gap: 2px; min-height: 0; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; scrollbar-width: thin; }
+.architecture-page .diagram-card { width: 100%; min-height: 42px; flex: none; padding: 8px 10px; border-color: transparent; border-radius: 5px; }
+.architecture-page .diagram-card[hidden] { display: none; }
+.architecture-page .diagram-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.architecture-page .diagram-card[aria-pressed='true'] { border-color: var(--border); background: var(--surface2); }
+.architecture-page .diagram-shell { min-width: 0; min-height: 0; border: 0; }
+.architecture-page .diagram-guide { flex: none; min-width: 0; padding: 14px 4px 0; margin-top: 12px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
+.architecture-page .diagram-guide h2 { margin-bottom: 13px; font-size: 12px; font-weight: 600; letter-spacing: 0; color: var(--text); }
+.architecture-page .diagram-legend { display: grid; align-items: start; gap: 14px; font-size: 11px; }
+.architecture-page .diagram-legend .key-item { display: flex; align-items: flex-start; gap: 9px; white-space: normal; }
+.architecture-page .diagram-legend .key-item i { flex: none; margin-top: 8px; }
+.architecture-page .diagram-legend .key-item span { display: grid; gap: 2px; }
+.architecture-page .diagram-legend .key-item strong { color: var(--text); font-size: 11px; font-weight: 600; }
+.architecture-page .diagram-legend .key-item small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+.architecture-page .diagram-guide p { margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.45; }
+.architecture-page .diagram-current { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: min(55%, 320px); padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); pointer-events: none; }
+.architecture-page .diagram-current strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.architecture-page .diagram-current small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.architecture-page .diagram-viewport { padding-top: 70px; box-sizing: border-box; }
+.architecture-page .diagram-viewport { cursor: grab; }
+.architecture-page .diagram-viewport.is-panning { cursor: grabbing; user-select: none; }
+.architecture-page .diagram-browser { grid-row: 1 / -1; }
+.architecture-page .flow-section:fullscreen { grid-template-rows: minmax(0, 1fr); }
+.architecture-page .flow-section:fullscreen .diagram-viewport { min-height: 0; }
+
+@media (max-width: 980px) {
+  .architecture-page .flow-section { grid-template-columns: 184px minmax(0, 1fr); }
+}
+@media (max-width: 740px) {
+  .architecture-page .vp-titlebar { flex-direction: row; align-items: center; gap: 8px; }
+  .architecture-page .vp-titlebar h1 { font-size: 18px; }
+  .architecture-page .flow-section { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .architecture-page .diagram-browser { grid-row: auto; }
+  .architecture-page .diagram-browser { max-height: 205px; padding: 9px 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .architecture-page .diagram-browser-head { flex-direction: row; justify-content: space-between; margin-bottom: 6px; }
+  .architecture-page .diagram-guide { display: flex; align-items: center; gap: 12px; padding: 7px 0 0; margin-top: 6px; }
+  .architecture-page .diagram-guide h2, .architecture-page .diagram-guide p { display: none; }
+  .architecture-page .diagram-legend { display: flex; gap: 12px; }
+  .architecture-page .diagram-legend .key-item small { display: none; }
+  .architecture-page .diagram-legend .key-item i { margin-top: 6px; }
+  .architecture-page .diagram-current { top: 8px; left: 8px; max-width: 65%; padding: 5px 7px; }
+}
+
+.architecture-page .system-node { border-radius: 10px; padding: 10px 12px; background: var(--surface); font-family: var(--font); }
+.architecture-page .system-node small { color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: 0; }
+.architecture-page .system-node strong { font: 600 13px/1.2 var(--font); letter-spacing: -.02em; }
+.architecture-page .system-node > span { font-size: 10px; }
+.architecture-page .system-node:hover, .architecture-page .system-node:focus-visible { z-index: 4; border-color: var(--muted); }
+.architecture-page .system-node.connected { border-color: var(--accent); background: var(--surface2); }
+.architecture-page .system-edge { stroke-linecap: round; stroke-linejoin: round; }
+.architecture-page .diagram-inspector { position: absolute; z-index: 6; top: 0; right: 0; bottom: 0; left: auto; display: block; width: min(390px, 45%); height: 100%; max-height: none; padding: 20px 22px; margin: 0; overflow: auto; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface); box-shadow: -12px 0 30px #0003; font-family: var(--font); transform: translateX(100%); opacity: 0; visibility: hidden; pointer-events: none; transition: transform .24s ease, opacity .24s ease, visibility .24s; }
+.architecture-page .diagram-inspector.is-open { transform: translateX(0); opacity: 1; visibility: visible; pointer-events: auto; }
+.architecture-page .diagram-inspector #flow-counter { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
+.architecture-page .diagram-inspector h2 { font: 600 18px/1.3 var(--font); letter-spacing: -.02em; }
+.architecture-page .diagram-inspector p { font-size: 13px; line-height: 1.55; }
+.architecture-page .flow-file span, .architecture-page .flow-file small { font-size: 11px; }
+@media (max-width: 740px) {
+  .architecture-page .diagram-inspector { position: absolute; top: 0; right: 0; bottom: 0; left: auto; width: min(350px, 92%); height: 100%; max-height: none; margin: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .architecture-page .diagram-inspector { transition: none; }
+}

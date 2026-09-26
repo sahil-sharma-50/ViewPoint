@@ -1,49 +1,29 @@
-/**
- * src/server.ts — Last Rites HTTP server (Tasks 4 + 6).
- *
- * Routes:
- *   GET  /                       → public/index.html (URL input form)
- *   POST /analyse   { url }      → clones repo, builds graph, returns { sessionId }
- *   GET  /graph?session=<id>     → serialised ExportGraph for a session
- *   POST /rehearse  { sessionId, candidateId }
- *                                → runs rehearseRemoval, returns RehearsalResult
- *   GET  /report?session=<id>    → rendered HTML report page
- *   GET  /report/patch?session=<id>
- *                                → attachment download of removal.patch
- *   GET  /api/graph              → demo graph (backward-compat for existing tests)
- *
- * The server NEVER accepts a client-supplied filesystem path.
- * Session state (repoPath, graph, rehearsal) lives server-side under a UUID.
- */
+/** Repository analysis API. Clone paths and graphs stay behind session IDs. */
 
 import express from 'express';
 import * as path from 'node:path';
 import * as url from 'node:url';
 import * as fs from 'node:fs';
-import { cloneRepo, isValidGitHubUrl } from './clone-repo.js';
-import { buildGraph } from './analyse-repo.js';
-import { rehearseRemoval } from './rehearse-removal.js';
-import { renderGraphPage } from './graph-view.js';
-import { generateReport } from './report-writer.js';
+import { analyseInWorker, architectureInWorker } from './analysis-worker.js';
+import { cloneRepo, cloneErrorMessages, isValidGitHubUrl, DEFAULT_MAX_BYTES } from './clone-repo.js';
+import { buildGraph, ANALYSIS_VERSION } from './analyse-repo.js';
+import { explainArchitecture, explainMapContext } from './watsonx.js';
+import { mapExplainContext } from './map-explain.js';
+import type { MapSelection } from './map-explain.js';
 import { createSession, getSession, updateSession } from './session-store.js';
 import type { ExportGraph } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Serialisation helpers (unchanged from Task 4 — existing tests depend on them)
+// Serialisation helpers for API responses
 // ---------------------------------------------------------------------------
 
 export interface SerialNode {
   id: string;
   file: string;
   name: string;
-  kind: string;
   fanIn: number;
   fanOut: number;
-  isSoleExport: boolean;
   isEntryPoint: boolean;
-  entryPointKind?: string;
-  certainty: string;
-  evidence: { kind: string; detail: string }[];
 }
 
 export interface SerialEdge {
@@ -56,52 +36,37 @@ export interface SerialEdge {
 export interface SerialGraph {
   nodes: SerialNode[];
   edges: SerialEdge[];
+  warnings?: string[];
 }
 
 /** Convert an ExportGraph (with Maps/Sets) to a plain JSON-safe object. */
 export function serialiseGraph(graph: ExportGraph): SerialGraph {
-  // Build a reverse lookup: absFileId → repo-relative file path.
-  // Edges keys are absolute file IDs; nodes carry repo-relative paths.
-  // We derive the repo-relative path from nodes keyed by the same file.
-  const absToRel = new Map<string, string>();
-  for (const node of graph.nodes.values()) {
-    // node.id is "relFile#name"; node.file is the repo-relative path.
-    // We need the absolute key that edges use.  The edges map uses the same
-    // string that buildGraph stores — which is the absolute normalised path.
-    // We reconstruct it from node.file by checking which edge key ends with
-    // the repo-relative file.  However, to avoid O(n²) scanning we instead
-    // build a set of all distinct node.file values and later match edge
-    // source keys by suffix.  We record them separately below.
-    absToRel.set(node.file, node.file); // identity entry for rel → rel
-  }
-
   // Collect all distinct repo-relative file values from nodes.
   const relFiles = new Set<string>();
   for (const node of graph.nodes.values()) {
     relFiles.add(node.file);
   }
 
-  // Map edge keys (absolute paths) to repo-relative paths by matching suffix.
-  const edgeKeyToRel = new Map<string, string>();
-  for (const edgeKey of graph.edges.keys()) {
-    // edgeKey may be absolute (e.g. /tmp/repo/src/foo.ts) or relative.
-    // Match by finding which relFile the edgeKey ends with.
-    for (const rel of relFiles) {
-      if (edgeKey === rel || edgeKey.endsWith('/' + rel) || edgeKey.endsWith('\\' + rel)) {
-        edgeKeyToRel.set(edgeKey, rel);
-        break;
-      }
-    }
-  }
+  // Production graphs use relative paths. Resolve those in O(1); retain an
+  // absolute-path fallback for older graphs, preferring the longest suffix.
+  const suffixes = [...relFiles].sort((a, b) => b.length - a.length);
+  const resolved = new Map<string, string | undefined>();
+  const resolve = (file: string): string | undefined => {
+    if (resolved.has(file)) return resolved.get(file);
+    const normalized = file.replace(/\\/g, '/');
+    const relative = relFiles.has(normalized) ? normalized : suffixes.find(candidate => normalized.endsWith('/' + candidate));
+    resolved.set(file, relative);
+    return relative;
+  };
 
   const edges: SerialEdge[] = [];
   for (const [source, targetSet] of graph.edges) {
-    const sourceRel = edgeKeyToRel.get(source);
+    const sourceRel = resolve(source);
     if (!sourceRel) continue; // skip edge keys that don't map to a known file
 
     const targets: string[] = [];
     for (const target of targetSet) {
-      const targetRel = edgeKeyToRel.get(target);
+      const targetRel = resolve(target);
       if (targetRel) targets.push(targetRel);
     }
     if (targets.length > 0) {
@@ -113,91 +78,121 @@ export function serialiseGraph(graph: ExportGraph): SerialGraph {
     id: n.id,
     file: n.file,
     name: n.name,
-    kind: n.kind,
     fanIn: n.fanIn,
     fanOut: n.fanOut,
-    isSoleExport: n.isSoleExport,
     isEntryPoint: n.isEntryPoint,
-    entryPointKind: n.entryPointKind,
-    certainty: n.certainty,
-    evidence: n.evidence,
   }));
 
-  return { nodes, edges };
+  return { nodes, edges, ...(graph.warnings?.length ? { warnings: graph.warnings } : {}) };
 }
 
 // ---------------------------------------------------------------------------
 // Express application factory
 // ---------------------------------------------------------------------------
 
-export function createApp(demoGraph: ExportGraph, clone: typeof cloneRepo = cloneRepo): express.Application {
+export function createApp(clone: typeof cloneRepo = cloneRepo): express.Application {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '16kb' }));
+  app.use((_req, res, next) => { res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
+  const refreshes = new Map<string, Promise<Awaited<ReturnType<typeof buildGraph>>>>();
+  const architectureJobs = new Map<string, Promise<void>>();
+  function ensureArchitecture(sessionId: string): Promise<void> {
+    const session = getSession(sessionId);
+    if (!session?.graph || !session.repoPath || session.architecture || session.architectureError) return Promise.resolve();
+    let job = architectureJobs.get(sessionId);
+    if (!job) {
+      job = architectureInWorker(session.repoPath, serialiseGraph(session.graph)).then(result => {
+        if (result.ok) updateSession(sessionId, { architecture: result.architecture });
+        else updateSession(sessionId, { architectureError: result.error });
+      }).finally(() => architectureJobs.delete(sessionId));
+      architectureJobs.set(sessionId, job);
+    }
+    return job;
+  }
+  app.use(['/graph', '/architecture', '/api/workspace', '/api/map-explain', '/api/architecture-brief'], async (req, res, next) => {
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : req.body?.sessionId;
+    if (typeof sessionId !== 'string') { next(); return; }
+    const session = getSession(sessionId);
+    if (!session?.graph || session.graph.analysisVersion === ANALYSIS_VERSION) { next(); return; }
+    let refresh = refreshes.get(sessionId);
+    if (!refresh) {
+      refresh = analyseInWorker(session.repoPath).finally(() => refreshes.delete(sessionId));
+      refreshes.set(sessionId, refresh);
+    }
+    const result = await refresh;
+    if (!result.ok) { res.status(503).json({ ok: false, error: 'This saved analysis could not be refreshed. Analyse the repository again.' }); return; }
+    updateSession(sessionId, { graph: result.graph, architecture: undefined, architectureError: undefined });
+    next();
+  });
 
   const __filename = url.fileURLToPath(import.meta.url);
   const projectRoot = path.resolve(path.dirname(__filename), '..');
   const publicDir = path.join(projectRoot, 'public');
-
-  // ── GET / ─────────────────────────────────────────────────────────────────
-  // Serve the URL input form.  Falls back to a minimal inline form if the
-  // public/ directory hasn't been built yet (e.g. during unit tests).
-  app.get('/', (_req, res) => {
-    const indexPath = path.join(publicDir, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.sendFile(indexPath);
-    } else {
-      // Fallback: render the demo graph as the old Task 4 view.
-      const html = renderGraphPage(serialiseGraph(demoGraph));
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(html);
-    }
+  const isDev = process.env['npm_lifecycle_event'] === 'dev';
+  app.get('/__dev/reload', (_req, res) => {
+    if (!isDev) { res.status(204).end(); return; }
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
+    res.write(': connected\n\n');
+  });
+  app.use(express.static(publicDir, { index: false }));
+  let activeAnalyses = 0;
+  app.get('/analysis-status', (req, res) => {
+    const session = getSession(String(req.query['session'] ?? ''));
+    res.setHeader('Cache-Control', 'no-store');
+    if (!session) { res.status(404).json({ error: 'This session has expired. Analyse the repository again.' }); return; }
+    res.json({ status: session.status ?? 'complete', error: session.error, repoUrl: session.repoUrl, expiresAt: session.expiresAt });
   });
 
   // ── POST /analyse ─────────────────────────────────────────────────────────
   // Accepts: { url: string }
   // Returns: { sessionId: string }  or  HTTP 400 with { error: string }
   app.post('/analyse', async (req, res) => {
-    const body = req.body as { url?: unknown };
-    const repoUrl = typeof body.url === 'string' ? body.url.trim() : '';
-
-    if (!repoUrl) {
-      res.status(400).json({ error: 'Missing "url" field.' });
+    const body = (req.body ?? {}) as { url?: unknown; token?: unknown; async?: boolean };
+    const input = typeof body.url === 'string' ? body.url.trim() : '';
+    const repoUrl = /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(input) ? 'https://github.com/' + input : input;
+    if (!repoUrl || !isValidGitHubUrl(repoUrl)) {
+      res.status(400).json({ error: 'Enter a GitHub repository URL or owner/repository.' });
       return;
     }
-    if (!isValidGitHubUrl(repoUrl)) {
-      res.status(400).json({
-        error:
-          'Invalid GitHub URL. Supply a public HTTPS URL in the form ' +
-          'https://github.com/<owner>/<repo>.',
-      });
-      return;
+    if (body.token !== undefined) {
+      res.status(400).json({ error: 'Only public GitHub repositories are supported. Tokens are not accepted.' }); return;
     }
-
-    // Clone
-    const cloneResult = await clone(repoUrl);
-    if (!cloneResult.ok) {
-      const msgs: Record<string, string> = {
-        INVALID_URL: 'Invalid GitHub URL.',
-        CLONE_FAILED: 'Failed to clone the repository. Check that the URL is public and accessible.',
-        SIZE_EXCEEDED: 'Repository TypeScript source exceeds the 50 MB limit.',
-      };
-      res.status(400).json({ error: msgs[cloneResult.error] ?? cloneResult.error });
-      return;
+    if (activeAnalyses >= 2) {
+      res.status(429).json({ error: 'The server is analysing two repositories. Please try again shortly.' }); return;
     }
-
-    const graphResult = await buildGraph(cloneResult.path);
-    if (!graphResult.ok || graphResult.graph.nodes.size === 0) {
-      await fs.promises.rm(cloneResult.path, { recursive: true, force: true });
-      res.status(400).json({ error: graphResult.ok
-        ? 'No TypeScript files found in this repository.'
-        : 'Could not analyse this repository. A valid root tsconfig.json is required.' });
-      return;
+    activeAnalyses++;
+    const sessionId = createSession('', repoUrl);
+    updateSession(sessionId, { status: 'cloning' });
+    if (body.async) res.status(202).json({ sessionId });
+    try {
+      const cloneResult = await clone(repoUrl, DEFAULT_MAX_BYTES);
+      if (!cloneResult.ok) {
+        const message = cloneResult.error === 'SIZE_EXCEEDED'
+          ? `Repository exceeds this server's ${Math.round(DEFAULT_MAX_BYTES / 1024 / 1024)} MB checkout budget. Configure VIEWPOINT_MAX_REPO_MB for a larger server.`
+          : cloneErrorMessages[cloneResult.error];
+        updateSession(sessionId, { status: 'error', error: message });
+        if (!body.async) res.status(400).json({ error: message });
+        return;
+      }
+      updateSession(sessionId, { repoPath: cloneResult.path, status: 'analysing' });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const graphResult = await analyseInWorker(cloneResult.path);
+      if (!graphResult.ok || graphResult.graph.nodes.size === 0) {
+        await fs.promises.rm(cloneResult.path, { recursive: true, force: true });
+        throw new Error(graphResult.ok ? 'This repository contains no inspectable files.' : graphResult.error);
+      }
+      updateSession(sessionId, { graph: graphResult.graph, status: 'complete' });
+      void ensureArchitecture(sessionId);
+      if (!body.async) res.json({ sessionId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Analysis failed. Please try again.';
+      updateSession(sessionId, { status: 'error', error: message });
+      if (!res.headersSent) res.status(400).json({ error: message });
+    } finally {
+      activeAnalyses--;
     }
-
-    const sessionId = createSession(cloneResult.path, repoUrl);
-    updateSession(sessionId, { graph: graphResult.graph });
-    res.json({ sessionId });
   });
 
   // ── GET /graph?session=<id> ───────────────────────────────────────────────
@@ -220,168 +215,95 @@ export function createApp(demoGraph: ExportGraph, clone: typeof cloneRepo = clon
     res.json(serialiseGraph(session.graph));
   });
 
-  // ── GET /graph-view?session=<id> ─────────────────────────────────────────
-  // Renders the interactive graph page with the session's graph embedded and
-  // the sessionId baked in so "Preview removal" can call /rehearse correctly.
-  app.get('/graph-view', (req, res) => {
+  app.get('/api/workspace', async (req, res) => {
     const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
-    if (!sessionId) {
-      res.status(400).send('<p>Missing "session" query parameter.</p>');
-      return;
-    }
     const session = getSession(sessionId);
-    if (!session) {
-      res.status(404).send('<p>Session not found.</p>');
+    if (!session?.graph || !session.repoPath) {
+      res.status(404).json({ error: 'This session has expired. Analyse the repository again.' });
       return;
     }
-    if (!session.graph) {
-      res.status(404).send('<p>Graph not yet available for this session.</p>');
-      return;
-    }
-    const html = renderGraphPage(serialiseGraph(session.graph), sessionId);
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
-  });
-
-  // ── POST /rehearse ────────────────────────────────────────────────────────
-  // Accepts: { sessionId: string, candidateId: string }
-  // Returns: RehearsalResult  or  HTTP 400/404
-  app.post('/rehearse', async (req, res) => {
-    const body = req.body as { sessionId?: unknown; candidateId?: unknown };
-    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
-    const candidateId = typeof body.candidateId === 'string' ? body.candidateId : '';
-
-    if (!sessionId || !candidateId) {
-      res.status(400).json({ error: 'Missing "sessionId" or "candidateId".' });
-      return;
-    }
-
-    const session = getSession(sessionId);
-    if (!session) {
-      res.status(404).json({ error: 'Session not found.' });
-      return;
-    }
-    if (!session.graph) {
-      res.status(404).json({ error: 'Graph not available for this session.' });
-      return;
-    }
-
-    // Validate candidate from the stored graph — never trust client-supplied paths.
-    const node = session.graph.nodes.get(candidateId);
-    if (!node) {
-      res.status(400).json({ error: `Candidate "${candidateId}" not found in graph.` });
-      return;
-    }
-    if (node.certainty !== 'candidate') {
-      res.status(400).json({
-        error:
-          `Cannot rehearse removal: node "${candidateId}" has certainty "${node.certainty}". ` +
-          'Only nodes with certainty "candidate" may be rehearsed.',
-      });
-      return;
-    }
-    if (!node.isSoleExport) {
-      res.status(400).json({
-        error:
-          `Cannot rehearse removal: node "${candidateId}" is not a sole export (isSoleExport is false). ` +
-          'Whole-file removal is only available for files with a single export.',
-      });
-      return;
-    }
-
-    const candidate = { nodeId: node.id, file: node.file, name: node.name };
-    const result = await rehearseRemoval(session.repoPath, candidate, session.graph);
-
-    if (result.ok) {
-      updateSession(sessionId, { rehearsal: result });
-    }
-
-    res.json(result);
-  });
-
-  // ── GET /report?session=<id> ──────────────────────────────────────────────
-  // Returns: rendered HTML report page for the most recent rehearsal.
-  app.get('/report', (req, res) => {
-    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
-    if (!sessionId) {
-      res.status(400).send('<p>Missing "session" query parameter.</p>');
-      return;
-    }
-    const session = getSession(sessionId);
-    if (!session || !session.rehearsal) {
-      res.status(404).send('<p>Rehearsal result not found. Run /rehearse first.</p>');
-      return;
-    }
-
-    // Find the candidate node from the graph to get its file/name.
-    let candidateFile = '(unknown)';
-    let candidateName = '(unknown)';
-    if (session.graph) {
-      for (const node of session.graph.nodes.values()) {
-        if (session.rehearsal.removedFiles.includes(node.file)) {
-          candidateFile = node.file;
-          candidateName = node.name;
-          break;
-        }
+    const graph = serialiseGraph(session.graph);
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.query['view'] !== 'architecture') {
+        res.json({ graph, repoUrl: session.repoUrl });
+        return;
       }
+      if (!session.architecture && !session.architectureError) {
+        void ensureArchitecture(sessionId);
+        res.status(202).json({ status: 'building' });
+        return;
+      }
+      const current = getSession(sessionId);
+      if (current?.architectureError) throw new Error(current.architectureError);
+      const architecture = current?.architecture;
+      if (!architecture) throw new Error('Architecture view unavailable.');
+      res.json({ graph, architecture, repoUrl: session.repoUrl });
+    } catch {
+      res.status(500).json({ error: 'Architecture view could not be prepared.' });
     }
-
-    const report = generateReport(session.rehearsal, {
-      repoUrl: session.repoUrl,
-      candidateFile,
-      candidateName,
-      patchUrl: `/report/patch?session=${encodeURIComponent(sessionId)}`,
-    });
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(report.html);
   });
 
-  // ── GET /report/patch?session=<id> ───────────────────────────────────────
-  // Returns: removal.patch file download.
-  app.get('/report/patch', (req, res) => {
-    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : '';
-    if (!sessionId) {
-      res.status(400).send('Missing "session" query parameter.');
-      return;
+  app.post('/api/map-explain', async (req, res) => {
+    const origin = req.get('origin');
+    if (origin) {
+      try { if (new URL(origin).host !== req.get('host')) { res.status(403).json({ ok: false, error: 'Cross-origin requests are not supported.' }); return; } }
+      catch { res.status(403).json({ ok: false, error: 'Invalid origin.' }); return; }
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    const { sessionId, selection, question } = req.body ?? {};
+    const validSelection = selection && typeof selection === 'object' && (
+      (selection.kind === 'file' && typeof selection.file === 'string' && selection.file.length <= 2000) ||
+      (selection.kind === 'folder' && typeof selection.folder === 'string' && selection.folder.length <= 2000) ||
+      (selection.kind === 'link' && typeof selection.source === 'string' && typeof selection.target === 'string' && selection.source.length <= 2000 && selection.target.length <= 2000)
+    );
+    if (typeof sessionId !== 'string' || !validSelection || typeof question !== 'string' || !question.trim() || question.length > 300) {
+      res.status(400).json({ ok: false, error: 'Choose a map item and enter a short question.' }); return;
     }
     const session = getSession(sessionId);
-    if (!session || !session.rehearsal) {
-      res.status(404).send('Rehearsal result not found. Run /rehearse first.');
-      return;
-    }
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="removal.patch"');
-    res.send(session.rehearsal.patchText);
+    if (!session?.graph || !session.repoPath) { res.status(404).json({ ok: false, error: 'This session has expired. Analyse the repository again.' }); return; }
+    const context = mapExplainContext(serialiseGraph(session.graph), selection as MapSelection);
+    if (!context.ok) { res.status(400).json(context); return; }
+    const excerpts: { file: string; text: string }[] = [];
+    try {
+      const root = await fs.promises.realpath(session.repoPath);
+      for (const relativeFile of context.excerptFiles) {
+        const file = await fs.promises.realpath(path.resolve(root, relativeFile));
+        const relative = path.relative(root, file);
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) continue;
+        const stats = await fs.promises.stat(file);
+        if (!stats.isFile() || stats.size > 100_000) continue;
+        excerpts.push({ file: relativeFile, text: (await fs.promises.readFile(file, 'utf8')).split('\n').slice(0, 60).join('\n').slice(0, 4000) });
+      }
+    } catch { /* The known graph still provides useful evidence. */ }
+    const evidence = [...context.evidence.slice(0, 16), ...excerpts.map(item => `Source excerpt: ${item.file}, first 60 lines.`)];
+    res.json(await explainMapContext(context.subject, evidence, question.trim(), excerpts));
   });
 
-  // ── GET /api/graph ────────────────────────────────────────────────────────
-  // Backward-compatible route used by existing Task 4 tests — returns the
-  // built-in demo graph.
-  app.get('/api/graph', (_req, res) => {
-    res.json(serialiseGraph(demoGraph));
+  app.post('/api/architecture-brief', async (req, res) => {
+    const origin = req.get('origin');
+    if (origin) {
+      try { if (new URL(origin).host !== req.get('host')) { res.status(403).json({ ok: false, error: 'Cross-origin requests are not supported.' }); return; } }
+      catch { res.status(403).json({ ok: false, error: 'Invalid origin.' }); return; }
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    const sessionId = req.body?.sessionId;
+    if (typeof sessionId !== 'string') { res.status(400).json({ ok: false, error: 'Choose an analysed repository.' }); return; }
+    const session = getSession(sessionId);
+    if (!session?.graph || !session.repoPath) { res.status(404).json({ ok: false, error: 'This session has expired.' }); return; }
+    await ensureArchitecture(sessionId);
+    const current = getSession(sessionId);
+    if (!current?.architecture) { res.status(503).json({ ok: false, error: current?.architectureError ?? 'Architecture view unavailable.' }); return; }
+    res.json(await explainArchitecture(current.architecture));
+  });
+
+  app.use((error: { type?: string }, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) { next(error); return; }
+    const status = error?.type === 'entity.parse.failed' ? 400 : error?.type === 'entity.too.large' ? 413 : 500;
+    const message = status === 400 ? 'Request body must be valid JSON.'
+      : status === 413 ? 'Request body is too large.' : 'The request could not be completed. Please try again.';
+    res.status(status).json({ ok: false, error: message });
   });
 
   return app;
-}
-
-// ---------------------------------------------------------------------------
-// Start server (only when this module is the entry point)
-// ---------------------------------------------------------------------------
-
-const __filename = url.fileURLToPath(import.meta.url);
-if (process.argv[1] === __filename || process.argv[1]?.endsWith('server.js')) {
-  const DEMO_PATH = path.resolve(path.dirname(__filename), '..', 'demo');
-  buildGraph(DEMO_PATH).then((result) => {
-    if (!result.ok) {
-      console.error('Failed to build demo graph:', result.error);
-      process.exit(1);
-    }
-    const PORT = Number(process.env['PORT'] ?? 3000);
-    const app = createApp(result.graph);
-    app.listen(PORT, () => {
-      console.log(`Last Rites server running on http://localhost:${PORT}`);
-    });
-  });
 }

@@ -7,10 +7,26 @@
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.p12
+*.key
+.vercel/
+evaluation-results.md
 
 # Dependencies and generated output
 node_modules/
 dist/
+.next/
+*.tsbuildinfo
+next-env.d.ts
 coverage/
 /output/
+.tools/
 *.log
+
+# Browser verification artifacts
+.playwright-cli/
+.playwright-mcp/

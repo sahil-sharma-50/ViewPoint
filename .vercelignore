@@ -1,0 +1,13 @@
+# Never upload local configuration or credentials.
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.p12
+*.key
+evaluation-results.md
+output/
+.tools/
+bob_sessions/
+docs/

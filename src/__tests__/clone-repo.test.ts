@@ -2,7 +2,7 @@
  * src/__tests__/clone-repo.test.ts
  *
  * Unit tests for cloneRepo, isValidGitHubUrl, canonicalGitHubUrl,
- * computeTsSourceSize, and DEFAULT_MAX_BYTES.
+ * computeRepoSize, and DEFAULT_MAX_BYTES.
  *
  * All external I/O (execFile, fs/promises) is mocked — no real git calls.
  * See clone-repo.integration.test.ts for a live clone smoke test.
@@ -16,12 +16,12 @@ import {
 } from '../clone-repo.js';
 
 // ---------------------------------------------------------------------------
-// DEFAULT_MAX_BYTES — verify the plan-specified 50 MB limit
+// DEFAULT_MAX_BYTES — configurable checkout budget
 // ---------------------------------------------------------------------------
 
 describe('DEFAULT_MAX_BYTES', () => {
-  it('is exactly 50 MB', () => {
-    expect(DEFAULT_MAX_BYTES).toBe(50 * 1024 * 1024);
+  it('defaults to a configurable 512 MB checkout budget', () => {
+    expect(DEFAULT_MAX_BYTES).toBe(512 * 1024 * 1024);
   });
 });
 
@@ -207,7 +207,7 @@ describe('cloneRepo', () => {
   // --- canonical URL passed to git ---
 
   it('passes the canonical URL to git, not the raw user input', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-canonical');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-canonical');
     execFileSucceeds();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockReaddir.mockResolvedValue([] as any);
@@ -217,28 +217,67 @@ describe('cloneRepo', () => {
 
     expect(mockExecFile).toHaveBeenCalledWith(
       'git',
-      ['clone', '--depth=1', 'https://github.com/owner/repo', '/tmp/last-rites-clone-canonical'],
+      ['clone', '--depth=1', 'https://github.com/owner/repo', '/tmp/viewpoint-clone-canonical'],
       expect.objectContaining({ timeout: expect.any(Number) }),
     );
   });
 
   // --- clone failure ---
 
+  it('retries a network failure once in a fresh directory with HTTP/1.1', async () => {
+    mockMkdtemp.mockResolvedValueOnce('/tmp/viewpoint-first').mockResolvedValueOnce('/tmp/viewpoint-retry');
+    mockExecFile.mockRejectedValueOnce({ stderr: 'RPC failed; connection reset' }).mockResolvedValueOnce(undefined);
+    mockReaddir.mockResolvedValue([]);
+    expect(await cloneRepo('https://github.com/owner/repo')).toEqual({ ok: true, path: '/tmp/viewpoint-retry' });
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    expect(mockExecFile.mock.calls[1][2].env).toMatchObject({ GIT_CONFIG_KEY_4: 'http.version', GIT_CONFIG_VALUE_4: 'HTTP/1.1', GIT_TERMINAL_PROMPT: '0' });
+    expect(mockRm).toHaveBeenCalledWith('/tmp/viewpoint-first', { recursive: true, force: true });
+  });
+
+  it('blocks inherited authentication prompts and isolates public checkout configuration', async () => {
+    vi.stubEnv('GIT_ASKPASS', 'launch-signin');
+    vi.stubEnv('GIT_CONFIG_PARAMETERS', 'credential.helper=manager');
+    try {
+      mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-public');
+      execFileSucceeds();
+      mockReaddir.mockResolvedValue([]);
+      await cloneRepo('https://github.com/owner/repo');
+      const options = mockExecFile.mock.calls[0][2];
+      expect(options.cwd).toBe('/tmp/viewpoint-clone-public');
+      expect(options.windowsHide).toBe(true);
+      expect(options.env).toMatchObject({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'Never', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '', GIT_CONFIG_KEY_1: 'core.askPass', GIT_CONFIG_VALUE_1: '' });
+      expect(options.env.GIT_CONFIG_PARAMETERS).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([
+    [{ code: 'ENOENT' }, 'GIT_UNAVAILABLE'],
+    [{ killed: true }, 'CLONE_TIMEOUT'],
+    [{ stderr: 'fatal: repository not found' }, 'REPO_UNAVAILABLE'],
+    [{ stderr: 'fatal: Could not resolve host: github.com' }, 'NETWORK_ERROR'],
+    [{ stderr: 'Clone succeeded, but checkout failed.' }, 'CHECKOUT_FAILED'],
+  ])('classifies clone failure %j without exposing raw output', async (failure, expected) => {
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-failure');
+    mockExecFile.mockRejectedValue(failure);
+    expect(await cloneRepo('https://github.com/owner/repo')).toEqual({ ok: false, error: expected });
+    expect(mockRm).toHaveBeenCalled();
+  });
+
   it('returns CLONE_FAILED and cleans up when git clone fails', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-abc');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-abc');
     execFileFails();
 
     const result = await cloneRepo('https://github.com/owner/repo');
 
     expect(result).toEqual({ ok: false, error: 'CLONE_FAILED' });
-    expect(mockRm).toHaveBeenCalledWith('/tmp/last-rites-clone-abc', {
+    expect(mockRm).toHaveBeenCalledWith('/tmp/viewpoint-clone-abc', {
       recursive: true,
       force: true,
     });
   });
 
   it('still returns CLONE_FAILED even when cleanup rm throws', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-rmfail');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-rmfail');
     execFileFails();
     mockRm.mockRejectedValue(new Error('rm failed'));
 
@@ -247,10 +286,10 @@ describe('cloneRepo', () => {
     expect(result).toEqual({ ok: false, error: 'CLONE_FAILED' });
   });
 
-  // --- size enforcement (TS-source-only) ---
+  // --- checkout size enforcement ---
 
   it('returns SIZE_EXCEEDED and cleans up when TS source exceeds the limit', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-xyz');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-xyz');
     execFileSucceeds();
 
     // One .ts file of 200 bytes.
@@ -260,51 +299,51 @@ describe('cloneRepo', () => {
     ] as any);
     mockLstat.mockResolvedValue({ size: 200 } as Awaited<ReturnType<typeof fsp.lstat>>);
 
-    // maxBytes = 100 → 200-byte .ts file exceeds the limit.
+    // maxBytes = 100 → 200-byte file exceeds the limit.
     const result = await cloneRepo('https://github.com/owner/repo', 100);
 
     expect(result).toEqual({ ok: false, error: 'SIZE_EXCEEDED' });
-    expect(mockRm).toHaveBeenCalledWith('/tmp/last-rites-clone-xyz', {
+    expect(mockRm).toHaveBeenCalledWith('/tmp/viewpoint-clone-xyz', {
       recursive: true,
       force: true,
     });
   });
 
-  it('does NOT count non-TS files toward the size limit', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-nonts');
+  it('counts all file types toward the checkout budget', async () => {
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-nonts');
     execFileSucceeds();
 
-    // A large JS file — must not count toward TS source limit.
+    // A large JS file counts toward the checkout budget.
     mockReaddir.mockResolvedValue([
       { name: 'bundle.js', isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any);
     mockLstat.mockResolvedValue({ size: 999_999_999 } as Awaited<ReturnType<typeof fsp.lstat>>);
 
-    // maxBytes = 1 — JS file must not trigger SIZE_EXCEEDED.
+    // maxBytes = 1 — the JS file exceeds the budget.
     const result = await cloneRepo('https://github.com/owner/repo', 1);
 
-    expect(result).toEqual({ ok: true, path: '/tmp/last-rites-clone-nonts' });
+    expect(result).toEqual({ ok: false, error: 'SIZE_EXCEEDED' });
   });
 
   // --- success path ---
 
   it('returns { ok: true, path } on a successful clone within the size limit', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-ok');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-ok');
     execFileSucceeds();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockReaddir.mockResolvedValue([] as any); // empty directory → 0 bytes
 
     const result = await cloneRepo('https://github.com/owner/repo');
 
-    expect(result).toEqual({ ok: true, path: '/tmp/last-rites-clone-ok' });
+    expect(result).toEqual({ ok: true, path: '/tmp/viewpoint-clone-ok' });
     expect(mockRm).not.toHaveBeenCalled();
   });
 
   // --- symlink safety ---
 
   it('skips symlinks when computing directory size', async () => {
-    mockMkdtemp.mockResolvedValue('/tmp/last-rites-clone-sym');
+    mockMkdtemp.mockResolvedValue('/tmp/viewpoint-clone-sym');
     execFileSucceeds();
 
     // Symlink whose target would be enormous — must be ignored.
@@ -318,6 +357,6 @@ describe('cloneRepo', () => {
     // maxBytes = 1; if symlink were followed, SIZE_EXCEEDED would fire.
     const result = await cloneRepo('https://github.com/owner/repo', 1);
 
-    expect(result).toEqual({ ok: true, path: '/tmp/last-rites-clone-sym' });
+    expect(result).toEqual({ ok: true, path: '/tmp/viewpoint-clone-sym' });
   });
 });

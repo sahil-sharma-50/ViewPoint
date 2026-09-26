@@ -1,0 +1,35 @@
+.analysis-progress{width:min(100%,680px);min-height:calc(100svh - 76px);margin:auto;padding:28px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.analysis-network{width:340px;max-width:100%;height:clamp(170px,27svh,250px);margin-bottom:24px}
+.analysis-wire{stroke:var(--border);stroke-width:1.5}
+.analysis-packet{stroke:var(--signal);stroke-width:2.5;stroke-linecap:round;stroke-dasharray:4 108;animation:analysis-packet 3s linear infinite}
+@keyframes analysis-packet{from{stroke-dashoffset:112}to{stroke-dashoffset:0}}
+.analysis-file{fill:var(--surface);stroke:var(--border)}
+.analysis-file-icon{stroke:var(--muted);stroke-width:1.5;stroke-linejoin:round}
+.analysis-port{fill:var(--signal)}
+.analysis-layer{fill:var(--surface);stroke:var(--signal);stroke-width:1.3;stroke-linejoin:round}
+.analysis-layer.lower{stroke-opacity:.3}
+.analysis-layer.middle{stroke-opacity:.6}
+.analysis-code-mark{stroke:var(--signal);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.analysis-progress h1{font-size:27px;font-weight:500;line-height:1.25;letter-spacing:-.025em;margin:0 0 10px}
+.analysis-progress #progress-repo{font-size:15px;color:var(--muted);max-width:100%;overflow-wrap:anywhere}
+.analysis-stages{width:min(100%,420px);display:grid;gap:0;list-style:none;padding:0;margin:28px 0 20px;text-align:left;color:var(--muted)}
+.analysis-stages li{position:relative;display:flex;align-items:center;gap:14px;min-height:72px;padding:10px 0}
+.analysis-stages li:not(:last-child)::after{content:'';position:absolute;left:13px;top:50px;bottom:-22px;width:1px;background:var(--border)}
+.analysis-step-marker{position:relative;z-index:1;display:grid;place-items:center;width:28px;height:28px;flex:none;border:1px solid var(--border);border-radius:50%;background:var(--bg)}
+.analysis-step-marker>span{width:5px;height:5px;border-radius:50%;background:var(--muted)}
+.analysis-stages strong{display:block;font-size:14px;font-weight:500}
+.analysis-stages li p{font-size:12px;line-height:1.5;margin-top:3px;color:var(--muted)}
+.analysis-step-status{margin-left:auto;flex:none;font-size:11px;color:var(--muted)}
+.analysis-stages [aria-current=step] strong{color:var(--text)}
+.analysis-stages [aria-current=step] .analysis-step-marker{border-color:var(--signal)}
+.analysis-stages [aria-current=step] .analysis-step-marker>span{background:var(--signal)}
+.analysis-stages [data-complete=true] .analysis-step-marker{border-color:var(--signal);color:var(--signal)}
+.analysis-stages [data-complete=true] .analysis-step-status{color:var(--signal)}
+.analysis-check{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.analysis-check path{stroke-dasharray:1;animation:analysis-check .35s ease-out both}
+@keyframes analysis-check{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+.analysis-progress #elapsed{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.analysis-progress>.btn{margin-top:20px}
+.analysis-progress[data-stage=complete] .analysis-packet{animation:none;display:none}
+@media(max-width:600px){.analysis-progress{min-height:calc(100svh - 56px);padding:24px 20px}.analysis-network{width:290px;height:210px;margin-bottom:20px}.analysis-progress h1{font-size:25px}.analysis-stages{margin-top:24px}.analysis-stages li{gap:10px}.analysis-step-status{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.analysis-packet{animation:none;display:none}.analysis-check path{animation:none}}

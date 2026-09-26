@@ -1,118 +1,48 @@
-# AGENTS.md — Agent (Coding) Mode
+# AGENTS.md — Repository guidance
 
-This file provides guidance to agents when working with code in this repository.
-
-## Project Status
-
-**Task 1 complete.** Scaffold, type contracts, and demo fixture are committed.
-`src/types.ts` is the stable contract for all subsequent tasks.
+ViewPoint maps public repositories for developer onboarding. The product has three views: system Architecture, folder Full Map, and Files.
 
 ## Stack
 
-- **Runtime:** Node.js 20, TypeScript 6 (strict mode, `module: Node16`)
-- **Compiler API:** `typescript` package directly — NOT `ts-morph` (explicitly prohibited)
-- **Test framework:** `vitest`
-- **Linter:** ESLint 10 flat config (`eslint.config.js`) — `@eslint/js` + `typescript-eslint`
-- **Formatter:** Prettier
-- **CLI runner:** `tsx` for development, compiled `dist/` for production
-- **Key deps:** `@inquirer/select`, `diff`, `fs-extra`, `express`
+- Node.js 20.9+, TypeScript 6, Next.js App Router, React, Express, Vitest, ESLint, Prettier.
+- `src/web-server.ts` serves Next.js and the Express API in one process.
+- Vercel uses Next.js route handlers, `src/vercel-repo.ts` for bounded GitHub archive analysis, and `src/vercel-session.ts` with private Blob sessions. `vercel.json` selects Next.js and schedules session cleanup.
+- Use the `typescript` compiler API directly for JavaScript and TypeScript parsing; do not add `ts-morph`.
+- Python uses `ast`; Go and Java use tree-sitter for connection scanning.
+
+## Local setup
+
+- Install Node.js 20.9+ and Git, then run `npm ci` from the repository root.
+- Run `npm run dev` and open `http://localhost:3000`. Enter a public GitHub URL or `owner/repository`; there is no bundled demo repository.
+- Python 3 enables Python imports. Go and Java additionally need `tree-sitter==0.26.0`, `tree-sitter-go==0.25.0`, and `tree-sitter-java==0.23.5`. The root README gives the install commands.
+- Source maps work without IBM credentials. For optional explanations, copy `.env.example` to `.env` and set `WATSONX_API_ENDPOINT`, `WATSONX_PROJECT_ID`, and `WATSONX_API_KEY` on the server. Never expose these values with `NEXT_PUBLIC_` or commit `.env`.
+- For the current local production process, run `npm run build` then `npm run start`. `PORT`, `VIEWPOINT_MAX_REPO_MB`, and `VIEWPOINT_MAX_FILES` are optional server environment variables.
+- The public deployment is `https://viewpoint-bob.vercel.app/`. A separate Vercel deployment needs a private Blob store, its `BLOB_READ_WRITE_TOKEN`, and a production `CRON_SECRET`. Optional IBM credentials belong in Sensitive server-side Vercel variables. See the root README for deployment steps and Vercel limits.
 
 ## Commands
 
-```
-npm run build      # tsc → dist/
-npm run lint       # eslint src/
-npm test           # vitest run (src/**/*.test.ts only)
-npm test -- --reporter=verbose              # verbose output
-npm test -- src/__tests__/<file>.test.ts    # single test file
-npm run analyse    # tsx src/cli.ts (dev shortcut)
-npm run evaluate   # tsx scripts/evaluate.ts (acceptance proof, Task 6+)
-npm run start      # node dist/server.js (Task 6+)
+```bash
+npm run dev
+npm run build
+npm run lint
+npm test
+npm run start
 ```
 
-## Architecture
+## Flow
 
-```
-CLI entry (src/cli.ts)
-  └─ clone-repo.ts        → CloneResult discriminated union
-       └─ analyse-repo.ts → ExportGraph (Map<id, ExportNode> + edges)
-            └─ present-candidates.ts  (--select <id> for CI/tests)
-                 └─ rehearse-removal.ts  (copy → strip imports → tsc diagnostics → diff)
-                      └─ report-writer.ts → report.html + removal.patch
-```
+`clone-repo.ts` creates a temporary checkout. `analyse-repo.ts` inventories visible files and records known import edges in `ExportGraph`. `architecture.ts` adds source backed component, route, and HTTP facts in a separate worker. `server.ts` serves the graph immediately; Architecture is prepared independently. `app/architecture/`, `app/full-map/`, and `app/graph-view/` render the three views. `watsonx.ts` is used only for user requested explanations.
 
-## Certainty Model (implemented in src/types.ts)
+On Vercel, `/analyse` builds the file graph and Architecture from a bounded public GitHub archive, saves the result in private Blob storage, and returns a session ID. `/api/workspace` loads that map; `/api/map-explain` calls Granite only after a user asks. The daily `/api/cleanup` route deletes expired sessions.
 
-| Value | Meaning |
-|-------|---------|
-| `'candidate'` | `fanIn === 0`, no unknown conditions, not a declared entry point. Offered for removal preview. Zero internal imports does NOT prove unused by external consumers — human review is still required. |
-| `'unknown'` | Cannot be confidently classified: dynamic import with non-literal specifier, barrel re-export reaching `node_modules`, `.d.ts`-only declaration, or file listed in `package.json` entry-point fields. Shown in "Needs review" section. |
-| `'unsafe'` | `fanIn > 0`. Has at least one known internal consumer. Hidden by default with count toggle. |
+`src/types.ts` defines file nodes and import edges. Edges point from an importing file to the file it imports. Include test imports because onboarding requires a complete connection map. Keep repository analysis read-only.
 
-**`'safe'` does not exist.** The plan originally used `'safe'`; the implemented types use `'candidate'` throughout. Do not introduce `'safe'` in any new code.
+## Verification
 
-## Verification / Rehearsal Model
+Tests live in `src/__tests__/`. Run `npm test`, `npm run lint`, and `npm run build`. The live GitHub clone test runs only when `VIEWPOINT_INTEGRATION=1` is set.
 
-The rehearsal engine compares diagnostic counts **before and after** removal.
-A repository may already have pre-existing TypeScript errors.
-The acceptance criterion is **`delta.newErrors.length === 0`** — i.e. no *new* errors introduced — NOT `after.diagnosticCount === 0`.
-`DiagnosticDelta` (defined in `src/types.ts`) carries `newErrors`, `resolvedErrors`, and `netChange`.
+## Hackathon materials
 
-## Demo Fixture (`demo/`)
-
-`demo/` is a purpose-built TypeScript app. It contains **unused feature modules** (`newDashboard.ts`, `legacyExport.ts`) that are never imported anywhere inside the demo — they exist to be retirement candidates for integration tests. It does **not** use feature flags.
-
-```
-demo/src/
-  features/
-    newDashboard.ts   ← unused module — fanIn: 0, isSoleExport: true → certainty: 'candidate'
-    legacyExport.ts   ← unused module — fanIn: 0, isSoleExport: true → certainty: 'candidate'
-    darkMode.ts       ← imported by index.ts → fanIn: 1, certainty: 'unsafe'
-  utils/
-    formatDate.ts     ← imported by all three features → fanIn: 3, certainty: 'unsafe'
-  index.ts            ← app entry; imports darkMode only
-```
-
-Integration tests assert:
-- `newDashboard.certainty === 'candidate'`, `fanIn === 0`, `isSoleExport === true`
-- `darkMode.certainty === 'unsafe'`, `fanIn === 1`
-- `formatDate.fanIn === 3`
-
-## Non-Obvious Constraints
-
-- **Discriminated unions over exceptions:** all public module functions return `Promise<{ ok: true; ... } | { ok: false; error: ErrorKind }>`.
-- **No `ts-morph`:** use the `typescript` package compiler API directly (`ts.createProgram`, `ts.createPrinter`, `ts.visitEachChild`).
-- **No string-replacement AST edits:** source mutations go through the TypeScript transformer/printer pipeline only.
-- **Rehearsal sandboxing:** `rehearseRemoval` must copy the source tree to a fresh `os.tmpdir()` path before any mutation. Never write to the original clone path.
-- **`typescript` in regular deps**, not devDeps — it is loaded at runtime to parse target repos.
-- **`tsconfig.json`:** `strict: true`, `target: ES2022`, `module: Node16`, `outDir: dist`.
-- **Entry-point protection:** files referenced by `package.json` `exports`, `main`, `module`, or `bin` must be classified `'unknown'`, never `'candidate'`.
-
-## Test File Location
-
-Test files live in `src/__tests__/` (same `src/` tree). Vitest discovers them automatically via `vitest.config.ts` (`include: ['src/**/*.test.ts']`). Running a single file:
-```
-npm test -- src/__tests__/<module>.test.ts
-```
-
-## Integration Test Seam
-
-`presentCandidates` must accept a `--select <id>` option that bypasses the interactive prompt. All integration tests that exercise the full pipeline use this flag. Do not write tests that depend on stdin/TTY.
-
-## Evaluation Script
-
-`scripts/evaluate.ts` is the acceptance proof for Task 6. It must assert all five before/after metrics defined in `last-rites-plan.md`. Keep it deterministic: fix the demo repo URL and `--select` id as constants inside the script.
-
-## Bob Subagent Guidance
-
-Tasks 2 (Cloner) and 4 (Presenter) are subagent-eligible (self-contained, mocked tests).
-Tasks 3, 5, 6 must run in the main context — they share/produce core types.
-Task 7 (artefacts) is subagent-eligible after Task 6 completes.
-
-## Hackathon Requirements
-
-- `bob_sessions/` must contain ≥ 6 PNG screenshots of Bob task session summaries.
-- `evaluation-results.md` (generated by `npm run evaluate`) must be committed.
-- `SUBMISSION.md` with problem statement + IBM Bob usage statement (≤ 500 words each).
-- Repository must be **public** with no IBM Cloud credentials in any committed file.
-- Submission deadline: **September 27, 2026 at 11:00 AM ET**.
+- Keep at least six IBM Bob task screenshots in `bob_sessions/`; its README identifies the early prototype tasks separately from the current product.
+- The repository must be public and must not commit IBM Cloud credentials.
+- Submission deadline: September 27, 2026 at 11:00 AM ET.

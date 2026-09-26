@@ -1,43 +1,41 @@
-/**
- * src/clone-repo.ts — Clone a public GitHub repository to a temporary directory.
- *
- * Contract:
- *   - URL must use HTTPS, hostname exactly "github.com", and carry exactly two
- *     non-empty path segments (<owner>/<repo>).
- *   - URL must not contain credentials (user:pass@), query strings, or fragments.
- *   - A canonical URL (https://github.com/<owner>/<repo>) is constructed from
- *     the validated parts and passed to Git — never the raw user string.
- *   - Uses execFile (no shell) with a hard timeout.
- *   - Creates a unique temporary directory per clone; failure to create it
- *     returns CLONE_FAILED rather than throwing.
- *   - Enforces a TypeScript source size limit (*.ts / *.tsx bytes, no symlinks).
- *   - Cleans up the temporary directory on any failure (best-effort; rm errors
- *     are swallowed so cleanup never masks the real error).
- *   - Returns a discriminated union — never throws.
- *
- * Size limit:
- *   The default cap is 50 MB of TypeScript source (*.ts / *.tsx), matching the
- *   plan specification. Only regular files with those extensions are counted;
- *   symlinks and all other file types are ignored.
- */
-
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm, lstat, readdir } from 'node:fs/promises';
-import { join, extname } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { CloneResult } from './types.js';
+import type { CloneResult, CloneError } from './types.js';
 
 const execFile = promisify(_execFile);
 
-/** Maximum total TypeScript source size in bytes (50 MB, per plan specification). */
-export const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+/** Configurable checkout budget, across all file types (including Git objects). */
+export const DEFAULT_MAX_BYTES = (Number(process.env['VIEWPOINT_MAX_REPO_MB']) || 512) * 1024 * 1024;
 
 /** git clone timeout in milliseconds (120 s). */
 const CLONE_TIMEOUT_MS = 120_000;
 
-/** File extensions counted toward the TypeScript source size limit. */
-const TS_EXTENSIONS = new Set(['.ts', '.tsx']);
+export const cloneErrorMessages: Record<CloneError, string> = {
+  INVALID_URL: 'Enter a public GitHub repository URL or owner/repository.',
+  CLONE_FAILED: 'The repository could not be downloaded or stored. Check server disk space and retry. This does not mean the repository is private.',
+  SIZE_EXCEEDED: 'Repository exceeds the configured checkout budget.',
+  REPO_UNAVAILABLE: 'GitHub did not allow anonymous access to this repository. Check that the URL exists and the repository is public. No GitHub sign-in is required or requested.',
+  CLONE_TIMEOUT: 'The repository download timed out after 120 seconds. Please retry or check the server connection.',
+  NETWORK_ERROR: 'The server could not connect to GitHub reliably. Check its network, proxy, or TLS configuration and retry.',
+  GIT_UNAVAILABLE: 'Git is not installed or is unavailable to the server. Install Git and restart the server.',
+  CHECKOUT_FAILED: 'Git downloaded the repository but could not write its files. Check disk space, permissions, and filenames supported by this server.',
+};
+
+function classifyCloneError(error: unknown): CloneError {
+  const failure = error as { code?: string; killed?: boolean; stderr?: string } | null;
+  const detail = failure?.stderr ?? '';
+  if (failure?.code === 'ENOENT') return 'GIT_UNAVAILABLE';
+  if (failure?.killed) return 'CLONE_TIMEOUT';
+  if (/repository not found|authentication failed|could not read Username|terminal prompts disabled|returned error: (401|403|404)/i.test(detail)) return 'REPO_UNAVAILABLE';
+  if (/could not resolve|failed to connect|connection|SSL|TLS|RPC failed|early EOF|unable to access/i.test(detail)) return 'NETWORK_ERROR';
+  if (/checkout failed|invalid path|filename too long|unable to create|unable to write|no space left|permission denied/i.test(detail)) return 'CHECKOUT_FAILED';
+  return 'CLONE_FAILED';
+}
+
+
 
 // ---------------------------------------------------------------------------
 // URL validation
@@ -62,7 +60,7 @@ export function isValidGitHubUrl(raw: string): boolean {
   }
 
   if (url.protocol !== 'https:') return false;
-  if (url.hostname !== 'github.com') return false;
+  if (url.hostname !== 'github.com' || url.port) return false;
 
   // Reject embedded credentials.
   if (url.username !== '' || url.password !== '') return false;
@@ -76,7 +74,7 @@ export function isValidGitHubUrl(raw: string): boolean {
   if (segments.length !== 2) return false;
 
   const [owner, repo] = segments;
-  if (!owner || !repo) return false;
+  if (!owner || !repo || !/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo) || repo === '.' || repo === '..') return false;
 
   return true;
 }
@@ -93,18 +91,18 @@ export function canonicalGitHubUrl(raw: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// TypeScript source size computation (no symlinks, *.ts / *.tsx only)
+// checkout size computation (no symlinks, all regular files)
 // ---------------------------------------------------------------------------
 
-export async function computeTsSourceSize(dir: string): Promise<number> {
+export async function computeRepoSize(dir: string): Promise<number> {
   let total = 0;
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue; // never follow symlinks
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      total += await computeTsSourceSize(full);
-    } else if (entry.isFile() && TS_EXTENSIONS.has(extname(entry.name))) {
+      total += await computeRepoSize(full);
+    } else if (entry.isFile()) {
       const st = await lstat(full);
       total += st.size;
     }
@@ -130,32 +128,71 @@ export async function cloneRepo(
   // Create a unique temp directory; if mkdtemp itself fails, return CLONE_FAILED.
   let cloneRoot: string;
   try {
-    cloneRoot = await mkdtemp(join(tmpdir(), 'last-rites-clone-'));
+    cloneRoot = await mkdtemp(join(tmpdir(), 'viewpoint-clone-'));
   } catch {
     return { ok: false, error: 'CLONE_FAILED' };
   }
 
   // Clone without a shell; timeout guards against hanging.
+  const controller = new AbortController();
+  let exceeded = false;
+  let checking = false;
+  const budgetCheck = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      if (await computeRepoSize(cloneRoot) > maxBytes) { exceeded = true; controller.abort(); }
+    } catch { /* Git may rename an object while it is being counted. */ }
+    finally { checking = false; }
+  }, 2000);
+  budgetCheck.unref();
+  // Public-only checkout: never inherit credential helpers, URL rewrites or askpass commands.
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.toUpperCase().startsWith('GIT_')) delete env[key];
   try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
     await execFile('git', ['clone', '--depth=1', cloneUrl, cloneRoot], {
       timeout: CLONE_TIMEOUT_MS,
+      signal: controller.signal,
+      cwd: cloneRoot,
+      windowsHide: true,
+      env: { ...env, GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1',
+        GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'Never',
+        GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+        GIT_CONFIG_COUNT: attempt ? '5' : '4', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
+        GIT_CONFIG_KEY_1: 'core.askPass', GIT_CONFIG_VALUE_1: '',
+        GIT_CONFIG_KEY_2: 'core.longpaths', GIT_CONFIG_VALUE_2: 'true',
+        GIT_CONFIG_KEY_3: 'http.extraHeader', GIT_CONFIG_VALUE_3: '',
+        ...(attempt ? { GIT_CONFIG_KEY_4: 'http.version', GIT_CONFIG_VALUE_4: 'HTTP/1.1' } : {}),
+      },
     });
-  } catch {
+        break;
+      } catch (error) {
+        if (attempt || exceeded || classifyCloneError(error) !== 'NETWORK_ERROR') throw error;
+        // A transport retry gets a fresh checkout; never reuse partially downloaded objects.
+        await rm(cloneRoot, { recursive: true, force: true });
+        cloneRoot = await mkdtemp(join(tmpdir(), 'viewpoint-clone-'));
+      }
+    }
+  } catch (error) {
     // Best-effort cleanup — swallow rm errors so they don't mask the real error.
     await rm(cloneRoot, { recursive: true, force: true }).catch(() => undefined);
-    return { ok: false, error: 'CLONE_FAILED' };
+    return { ok: false, error: exceeded ? 'SIZE_EXCEEDED' : classifyCloneError(error) };
+  } finally {
+    clearInterval(budgetCheck);
   }
 
-  // Enforce TypeScript source size limit (no symlinks).
-  let tsBytes: number;
+  // Enforce checkout size limit (no symlinks).
+  let repoBytes: number;
   try {
-    tsBytes = await computeTsSourceSize(cloneRoot);
+    repoBytes = await computeRepoSize(cloneRoot);
   } catch {
     await rm(cloneRoot, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, error: 'CLONE_FAILED' };
   }
 
-  if (tsBytes > maxBytes) {
+  if (repoBytes > maxBytes) {
     await rm(cloneRoot, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, error: 'SIZE_EXCEEDED' };
   }
