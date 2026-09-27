@@ -2,13 +2,11 @@
 
 **From code to clarity.**
 
-ViewPoint helps developers understand an unfamiliar public GitHub repository. Paste a repository URL, explore its architecture, follow connections between folders and files, and ask IBM Granite questions about selected source evidence.
+ViewPoint turns a public GitHub repository into an explorable map of its architecture, folders, files, and source connections. Paste a URL to see how the code fits together, inspect the evidence behind each diagram, and ask IBM Granite focused questions about selected files. IBM Bob helped plan, build, and refine the project; the repository analysis itself is deterministic and works without AI credentials.
 
-Built with **IBM Bob** for the **IBM Bob 2.0 Hackathon**.
+**Live app: [viewpoint-bob.vercel.app](https://viewpoint-bob.vercel.app/)**
 
 ![ViewPoint — public GitHub repositories turned into architecture diagrams, folder maps, and file connections. Built with IBM Bob.](assets/viewpoint_cover_image.png)
-
-**Live app for judges: [viewpoint-bob.vercel.app](https://viewpoint-bob.vercel.app/)** — paste any supported public GitHub repository URL to explore it. No account is required.
 
 [Quick start](#quick-start) · [Explore the app](#explore-the-app) · [How IBM Bob helped](#how-ibm-bob-helped-build-viewpoint) · [Optional AI setup](#optional-ai-setup) · [Verification](#verification)
 
@@ -32,7 +30,7 @@ IBM Bob was used in the `IBM_Bob_2.0` workspace to plan the project, scaffold it
 
 | Stage | What the Bob task records show |
 | --- | --- |
-| [Plan](bob_sessions/solorun_task00_create_last_rites_plan.png) | A request to read the hackathon brief, break the original concept into implementation tasks, and define acceptance checks. |
+| [Plan](bob_sessions/solorun_task00_create_last_rites_plan.png) | A request to read the requirement brief, break the original concept into implementation tasks, and define acceptance checks. |
 | [Scaffold](bob_sessions/solorun_task01_scaffold_types_demo.png) | A request to create shared types and an initial demo fixture before implementing the repository flow. |
 | [Repository intake](bob_sessions/solorun_task02_github_repo_cloner.png) and [analysis](bob_sessions/solorun_task03_typescript_dependency_graph.png) | Tasks for a public GitHub cloner and a deterministic TypeScript import graph. |
 | [Dependency UI](bob_sessions/solorun_task04_dependency_view.png) and [web integration](bob_sessions/solorun_task06_web_cli_integration.png) | Tasks for an interactive dependency view, a repository URL input, and server-side analysis sessions. |
